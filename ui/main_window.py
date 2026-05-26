@@ -14,8 +14,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QListWidget,
     QFrame,
-    QSplitter
+    QSplitter,
+    QStackedWidget  # Added for page switching
 )
+from ui.history_page import HistoryPage  # Import the new page
 
 
 class TitleBar(QWidget):
@@ -64,7 +66,7 @@ class TitleBar(QWidget):
         self.btn_minimize.clicked.connect(self.window().showMinimized)
 
         # Maximize
-        self.btn_maximize = QPushButton("▢")
+        self.btn_maximize = QPushButton("🗖")
         self.btn_maximize.setObjectName("btnMaximize")
         self.btn_maximize.setFixedSize(28, 28)
         self.btn_maximize.setCursor(Qt.PointingHandCursor)
@@ -85,10 +87,10 @@ class TitleBar(QWidget):
         if self.window().isMaximized():
             self.window().showNormal()
 
-            # 恢复固定窗口大小
-            self.window().setFixedSize(1000,600)
+            # 恢复固定窗口大小 (Updated to match 1000x600)
+            self.window().setFixedSize(1000, 600)
 
-            self.btn_maximize.setText("▢")
+            self.btn_maximize.setText("🗖")
         else:
             # 最大化前解除 fixed size
             self.window().setMinimumSize(800, 600)
@@ -123,7 +125,8 @@ class TitleBar(QWidget):
 
                 self.window().showNormal()
 
-                self.window().setFixedSize(1200, 760)
+                # FIXED: Changed from 1200, 760 to match your new 1000x600 scale
+                self.window().setFixedSize(1000, 600)
 
                 new_x = int(self.window().width() * ratio)
 
@@ -221,6 +224,9 @@ class MainWindow(QMainWindow):
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
 
+        sidebar.setMinimumWidth(200)  # 限制最小宽度，防止侧边栏被完全挤死消失
+        sidebar.setMaximumWidth(360)  # 限制最大宽度，防止侧边栏拉得过大（数值可根据喜好调整）
+
         sidebar_layout = QVBoxLayout(sidebar)
 
         sidebar_layout.setContentsMargins(20, 24, 20, 24)
@@ -236,9 +242,15 @@ class MainWindow(QMainWindow):
         self.dataset_list = QListWidget()
         self.dataset_list.setObjectName("datasetList")
 
+        # History Button (NEW)
+        self.history_btn = QPushButton("View History")
+        self.history_btn.setObjectName("historyBtn")
+        self.history_btn.setCursor(Qt.PointingHandCursor)
+
         sidebar_layout.addWidget(QLabel("CONTEXT DATA"))
         sidebar_layout.addWidget(self.upload_btn)
         sidebar_layout.addWidget(self.dataset_list, stretch=3)
+        sidebar_layout.addWidget(self.history_btn)  # Added to layout
 
         # Separator
         sep = QFrame()
@@ -256,7 +268,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.log_output, stretch=2)
 
         # =========================================================================
-        # Workspace
+        # Workspace (Page 1)
         # =========================================================================
 
         workspace = QWidget()
@@ -328,13 +340,25 @@ class MainWindow(QMainWindow):
         workspace_layout.addWidget(command_wrapper)
 
         # =========================================================================
-        # Splitter Assembly
+        # Container Page Stack & Splitter Assembly (UPDATED)
         # =========================================================================
 
-        self.main_splitter.addWidget(sidebar)
-        self.main_splitter.addWidget(workspace)
+        # Create Stacked Widget to hold your different pages
+        self.page_container = QStackedWidget()
+        self.history_page = HistoryPage()
 
-        self.main_splitter.setSizes([260, 940])
+        self.page_container.addWidget(workspace)         # Index 0
+        self.page_container.addWidget(self.history_page) # Index 1
+
+        self.main_splitter.addWidget(sidebar)
+        self.main_splitter.addWidget(self.page_container) # Put stack inside the splitter
+        self.main_splitter.setCollapsible(0, False)
+        # Updated to perfectly equal 1000 (260 sidebar + 740 page view)
+        self.main_splitter.setSizes([260, 740])
+
+        # Setup Page Toggle Connections
+        self.history_btn.clicked.connect(lambda: self.page_container.setCurrentIndex(1))
+        self.history_page.btn_back.clicked.connect(lambda: self.page_container.setCurrentIndex(0))
 
         # =========================================================================
         # Apply Style
@@ -360,26 +384,8 @@ class MainWindow(QMainWindow):
             }
 
             /* ========================================================================= */
-            /* Title Bar */
+            /* Title Bar 按钮完美对齐修复版 */
             /* ========================================================================= */
-
-            QWidget#titleBar {
-                background-color: #F3F4F6;
-                border-bottom: 2px solid #E5E7EB;
-            }
-
-            QLabel#titleBarLogo {
-                font-size: 15px;
-                color: #111827;
-                font-weight: bold;
-            }
-
-            QLabel#titleBarText {
-                font-family: "Segoe UI";
-                font-size: 12px;
-                font-weight: 500;
-                color: #374151;
-            }
 
             QPushButton#btnMinimize,
             QPushButton#btnMaximize,
@@ -388,10 +394,16 @@ class MainWindow(QMainWindow):
                 border: none;
                 border-radius: 6px;
                 color: #6B7280;
+                font-family: "Segoe UI", "Arial", sans-serif; /* 指定通用字体，防止符号大小失控 */
                 font-size: 11px;
-                font-weight: bold;
+                font-weight: normal;  /* 💡 修改1：特殊符号不要加粗，加粗会导致边界计算变形 */
+                
+                padding: 0px;         /* 💡 修改2：极度关键！必须彻底清空默认内边距 */
+                margin: 0px;          /* 💡 修改3：极度关键！必须彻底清空默认外边距 */
+                text-align: center;   /* 💡 修改4：强行令所有符号绝对居中 */
             }
 
+            /* 保持你原本的 hover 逻辑，但现在它们渲染出的灰色/红色方块大小将绝对一致 */
             QPushButton#btnMinimize:hover,
             QPushButton#btnMaximize:hover {
                 background-color: #E5E7EB;
@@ -429,9 +441,9 @@ class MainWindow(QMainWindow):
                 background-color: #E5E7EB;
             }
 
-            /* Upload Button */
-
-            QPushButton#uploadBtn {
+            /* Buttons (UPDATED to include historyBtn) */
+            QPushButton#uploadBtn,
+            QPushButton#historyBtn {
                 background-color: #FFFFFF;
                 color: #111827;
                 font-size: 13px;
@@ -442,7 +454,8 @@ class MainWindow(QMainWindow):
                 height: 32px;
             }
 
-            QPushButton#uploadBtn:hover {
+            QPushButton#uploadBtn:hover,
+            QPushButton#historyBtn:hover {
                 background-color: #F3F4F6;
             }
 
@@ -534,9 +547,6 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
     window = MainWindow()
-
     window.show()
-
     sys.exit(app.exec())
