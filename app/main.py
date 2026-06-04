@@ -1,21 +1,31 @@
-# app/main.py
+"""
+main.py
+───────
+应用入口点。
+"""
 
 import sys
+from config.settings import settings
 
+# 验证配置
+try:
+    settings.validate()
+except EnvironmentError as e:
+    print(f"❌ 配置错误: {e}")
+    sys.exit(1)
+
+# 启动 UI
 from PySide6.QtWidgets import QApplication
+from ui.main_window import MainWindow
 
-from app.app import Application
 
 def main():
-    """
-    Application entry point.
-    """
-
+    """主函数"""
     app = QApplication(sys.argv)
-
-    application = Application()
-    application.show()
-
+    
+    window = MainWindow()
+    window.show()
+    
     sys.exit(app.exec())
 
 

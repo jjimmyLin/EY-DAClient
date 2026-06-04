@@ -1,5 +1,3 @@
-# ui/main_window.py
-
 import sys
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QMouseEvent
@@ -15,9 +13,10 @@ from PySide6.QtWidgets import (
     QListWidget,
     QFrame,
     QSplitter,
-    QStackedWidget  # Added for page switching
+    QStackedWidget,
+    QFileDialog
 )
-from ui.history_page import HistoryPage  # Import the new page
+from ui.history_page import HistoryPage
 
 
 class TitleBar(QWidget):
@@ -86,61 +85,39 @@ class TitleBar(QWidget):
     def _toggle_maximize(self):
         if self.window().isMaximized():
             self.window().showNormal()
-
-            # 恢复固定窗口大小 (Updated to match 1000x600)
             self.window().setFixedSize(1000, 600)
-
             self.btn_maximize.setText("🗖")
         else:
-            # 最大化前解除 fixed size
             self.window().setMinimumSize(800, 600)
             self.window().setMaximumSize(16777215, 16777215)
-
             self.window().showMaximized()
-
             self.btn_maximize.setText("⧉")
-
-    # =========================================================================
-    # Dragging
-    # =========================================================================
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
             self._is_dragging = True
-
             self._drag_pos = (
                 event.globalPosition().toPoint()
                 - self.window().frameGeometry().topLeft()
             )
-
             event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent):
         if self._is_dragging and event.buttons() == Qt.LeftButton:
-
-            # 最大化状态拖动 -> 恢复窗口
             if self.window().isMaximized():
-
                 ratio = event.position().x() / self.width()
-
                 self.window().showNormal()
-
-                # FIXED: Changed from 1200, 760 to match your new 1000x600 scale
                 self.window().setFixedSize(1000, 600)
-
                 new_x = int(self.window().width() * ratio)
-
                 self._drag_pos = QPoint(
                     new_x,
                     int(event.position().y())
                 )
-
                 self.btn_maximize.setText("▢")
 
             self.window().move(
                 event.globalPosition().toPoint() - self._drag_pos
             )
-
             event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
@@ -157,35 +134,22 @@ class MainWindow(QMainWindow):
     """
     Main application window.
     Frameless modern AI workspace UI.
-    Resize completely disabled.
     """
 
     def __init__(self):
         super().__init__()
 
         self.setWindowTitle("AI Data Analysis Assistant")
-
-        # =========================================================================
-        # Fixed Normal Window Size
-        # =========================================================================
-
         self.resize(1000, 600)
-
-        # 禁止 resize
         self.setFixedSize(1000, 600)
-
-        # Frameless
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
-
         self.setAttribute(Qt.WA_TranslucentBackground, False)
+        
+        self.loaded_files = {}  # Store file_path -> FileMeta mapping
 
         self._init_ui()
 
     def _init_ui(self):
-
-        # =========================================================================
-        # Root Container
-        # =========================================================================
 
         root_widget = QWidget()
         root_widget.setObjectName("rootWidget")
@@ -194,27 +158,14 @@ class MainWindow(QMainWindow):
 
         root_layout = QVBoxLayout(root_widget)
 
-        # 不再需要 resize 边距
         root_layout.setContentsMargins(0, 0, 0, 0)
-
         root_layout.setSpacing(0)
 
-        # =========================================================================
-        # Title Bar
-        # =========================================================================
-
         self.title_bar = TitleBar(self)
-
         root_layout.addWidget(self.title_bar)
 
-        # =========================================================================
-        # Main Splitter
-        # =========================================================================
-
         self.main_splitter = QSplitter(Qt.Horizontal)
-
         self.main_splitter.setHandleWidth(1)
-
         root_layout.addWidget(self.main_splitter)
 
         # =========================================================================
@@ -223,26 +174,21 @@ class MainWindow(QMainWindow):
 
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-
-        sidebar.setMinimumWidth(200)  # 限制最小宽度，防止侧边栏被完全挤死消失
-        sidebar.setMaximumWidth(360)  # 限制最大宽度，防止侧边栏拉得过大（数值可根据喜好调整）
+        sidebar.setMinimumWidth(200)
+        sidebar.setMaximumWidth(360)
 
         sidebar_layout = QVBoxLayout(sidebar)
-
         sidebar_layout.setContentsMargins(20, 24, 20, 24)
-
         sidebar_layout.setSpacing(16)
 
-        # Upload button
         self.upload_btn = QPushButton("+ Add Dataset")
         self.upload_btn.setObjectName("uploadBtn")
         self.upload_btn.setCursor(Qt.PointingHandCursor)
+        self.upload_btn.clicked.connect(self._on_upload_clicked)
 
-        # Dataset list
         self.dataset_list = QListWidget()
         self.dataset_list.setObjectName("datasetList")
 
-        # History Button (NEW)
         self.history_btn = QPushButton("View History")
         self.history_btn.setObjectName("historyBtn")
         self.history_btn.setCursor(Qt.PointingHandCursor)
@@ -250,16 +196,13 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(QLabel("CONTEXT DATA"))
         sidebar_layout.addWidget(self.upload_btn)
         sidebar_layout.addWidget(self.dataset_list, stretch=3)
-        sidebar_layout.addWidget(self.history_btn)  # Added to layout
+        sidebar_layout.addWidget(self.history_btn)
 
-        # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
         sep.setObjectName("separator")
-
         sidebar_layout.addWidget(sep)
 
-        # Logs
         self.log_output = QTextEdit()
         self.log_output.setObjectName("logOutput")
         self.log_output.setReadOnly(True)
@@ -275,21 +218,16 @@ class MainWindow(QMainWindow):
         workspace.setObjectName("workspace")
 
         workspace_layout = QVBoxLayout(workspace)
-
         workspace_layout.setContentsMargins(0, 0, 0, 0)
         workspace_layout.setSpacing(0)
 
-        # Canvas container
         canvas_container = QWidget()
-
         canvas_layout = QVBoxLayout(canvas_container)
-
         canvas_layout.setContentsMargins(40, 40, 40, 20)
 
         self.result_output = QTextEdit()
         self.result_output.setObjectName("resultOutput")
         self.result_output.setReadOnly(True)
-
         self.result_output.setPlaceholderText(
             "Analysis results will appear here..."
         )
@@ -304,71 +242,120 @@ class MainWindow(QMainWindow):
         command_bar.setObjectName("commandBar")
 
         command_layout = QHBoxLayout(command_bar)
-
         command_layout.setContentsMargins(16, 12, 16, 12)
         command_layout.setSpacing(12)
 
         self.prompt_input = QTextEdit()
         self.prompt_input.setObjectName("promptInput")
-
         self.prompt_input.setPlaceholderText(
             "Ask a question about your data or request an analysis..."
         )
-
         self.prompt_input.setMaximumHeight(80)
 
-        # Run button
         self.run_btn = QPushButton("Analyze")
         self.run_btn.setObjectName("runBtn")
         self.run_btn.setCursor(Qt.PointingHandCursor)
         self.run_btn.setFixedSize(100, 48)
+        self.run_btn.clicked.connect(self._on_analyze_clicked)
 
         command_layout.addWidget(self.prompt_input)
         command_layout.addWidget(self.run_btn)
 
-        # Add workspace components
         workspace_layout.addWidget(canvas_container, stretch=1)
 
         command_wrapper = QWidget()
-
         wrapper_layout = QVBoxLayout(command_wrapper)
-
         wrapper_layout.setContentsMargins(40, 0, 40, 40)
-
         wrapper_layout.addWidget(command_bar)
 
         workspace_layout.addWidget(command_wrapper)
 
         # =========================================================================
-        # Container Page Stack & Splitter Assembly (UPDATED)
+        # Page Stack & Splitter Assembly
         # =========================================================================
 
-        # Create Stacked Widget to hold your different pages
         self.page_container = QStackedWidget()
         self.history_page = HistoryPage()
 
-        self.page_container.addWidget(workspace)         # Index 0
-        self.page_container.addWidget(self.history_page) # Index 1
+        self.page_container.addWidget(workspace)
+        self.page_container.addWidget(self.history_page)
 
         self.main_splitter.addWidget(sidebar)
-        self.main_splitter.addWidget(self.page_container) # Put stack inside the splitter
+        self.main_splitter.addWidget(self.page_container)
         self.main_splitter.setCollapsible(0, False)
-        # Updated to perfectly equal 1000 (260 sidebar + 740 page view)
         self.main_splitter.setSizes([260, 740])
 
-        # Setup Page Toggle Connections
         self.history_btn.clicked.connect(lambda: self.page_container.setCurrentIndex(1))
         self.history_page.btn_back.clicked.connect(lambda: self.page_container.setCurrentIndex(0))
 
-        # =========================================================================
-        # Apply Style
-        # =========================================================================
-
         self._apply_style()
 
-    # =========================================================================
-    # Styling
-    # =========================================================================
+    def _on_upload_clicked(self):
+        """Handle file upload and display in sidebar"""
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Excel Files",
+            "",
+            "Excel Files (*.xlsx *.xls);;All Files (*)"
+        )
+        
+        if not files:
+            return
+        
+        from core.preprocessor import Preprocessor
+        preprocessor = Preprocessor()
+        
+        for file_path in files:
+            try:
+                file_meta = preprocessor.process(file_path)
+                file_name = file_path.split('/')[-1]
+                
+                self.loaded_files[file_name] = file_meta
+                self.dataset_list.addItem(file_name)
+                self.log_output.append(f"✓ Loaded: {file_name}")
+            except Exception as e:
+                self.log_output.append(f"✗ Error loading {file_path}: {str(e)}")
+
+    def _on_analyze_clicked(self):
+        """Handle analyze button click"""
+        selected_item = self.dataset_list.currentItem()
+        query = self.prompt_input.toPlainText().strip()
+        
+        if not selected_item:
+            self.result_output.setText("Please select a dataset first")
+            return
+        
+        if not query:
+            self.result_output.setText("Please enter an analysis question")
+            return
+        
+        file_name = selected_item.text()
+        file_meta = self.loaded_files.get(file_name)
+        
+        if not file_meta:
+            self.result_output.setText("File metadata not found")
+            return
+        
+        try:
+            self.result_output.setText("⏳ Analyzing...")
+            self.log_output.append(f"Analyzing: {file_name}")
+            
+            from dify.workflow import AnalysisWorkflow
+            workflow = AnalysisWorkflow()
+            result = workflow.run([file_meta], query)
+            
+            if result.success:
+                output_text = result.execution.stdout if result.execution else ""
+                self.result_output.setText(output_text)
+                self.log_output.append("✓ Analysis completed")
+            else:
+                error_text = result.execution.stderr if result.execution else result.error
+                self.result_output.setText(f"Error:\n{error_text}")
+                self.log_output.append(f"✗ Analysis failed: {result.error}")
+                
+        except Exception as e:
+            self.result_output.setText(f"Exception: {str(e)}")
+            self.log_output.append(f"✗ Exception: {str(e)}")
 
     def _apply_style(self):
 
@@ -394,16 +381,15 @@ class MainWindow(QMainWindow):
                 border: none;
                 border-radius: 6px;
                 color: #6B7280;
-                font-family: "Segoe UI", "Arial", sans-serif; /* 指定通用字体，防止符号大小失控 */
+                font-family: "Segoe UI", "Arial", sans-serif;
                 font-size: 11px;
-                font-weight: normal;  /* 💡 修改1：特殊符号不要加粗，加粗会导致边界计算变形 */
+                font-weight: normal;
                 
-                padding: 0px;         /* 💡 修改2：极度关键！必须彻底清空默认内边距 */
-                margin: 0px;          /* 💡 修改3：极度关键！必须彻底清空默认外边距 */
-                text-align: center;   /* 💡 修改4：强行令所有符号绝对居中 */
+                padding: 0px;
+                margin: 0px;
+                text-align: center;
             }
 
-            /* 保持你原本的 hover 逻辑，但现在它们渲染出的灰色/红色方块大小将绝对一致 */
             QPushButton#btnMinimize:hover,
             QPushButton#btnMaximize:hover {
                 background-color: #E5E7EB;
@@ -441,7 +427,7 @@ class MainWindow(QMainWindow):
                 background-color: #E5E7EB;
             }
 
-            /* Buttons (UPDATED to include historyBtn) */
+            /* Buttons */
             QPushButton#uploadBtn,
             QPushButton#historyBtn {
                 background-color: #FFFFFF;
