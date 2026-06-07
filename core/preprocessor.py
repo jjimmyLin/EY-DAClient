@@ -24,6 +24,7 @@ class SheetMeta:
     null_counts: dict[str, int]
     head_sample: list[dict[str, Any]]
     describe: dict[str, Any]
+    unique_values: dict[str, list[str]]
 
     def to_prompt_dict(self) -> dict:
         """转换为可发送给 Dify 的格式"""
@@ -35,6 +36,7 @@ class SheetMeta:
             "null_counts": self.null_counts,
             "sample": self.head_sample,
             "describe": self.describe,
+            "unique_values": self.unique_values,
         }
 
 
@@ -62,6 +64,7 @@ class Preprocessor:
     def __init__(self) -> None:
         self._preview_rows = settings.PREVIEW_ROWS
         self._max_cols_describe = settings.MAX_COLS_DESCRIBE
+        self._max_unique_values = 30
 
     def process(self, file_path: str) -> FileMeta:
         """
@@ -115,6 +118,7 @@ class Preprocessor:
             col: {k: round(v, 4) for k, v in stats.items()}
             for col, stats in describe_raw.items()
         }
+        unique_values = self._collect_unique_values(df)
 
         return SheetMeta(
             sheet_name=sheet_name,
@@ -135,4 +139,16 @@ class Preprocessor:
             .astype(str)
             .to_dict(orient="records"),
             describe=describe,
+            unique_values=unique_values,
         )
+
+    def _collect_unique_values(self, df: pd.DataFrame) -> dict[str, list[str]]:
+        """Collect bounded factual evidence for low-cardinality text columns."""
+        values: dict[str, list[str]] = {}
+        text_cols = df.select_dtypes(include=["object", "string"]).columns
+        for col in text_cols:
+            series = df[col].dropna().astype(str)
+            unique = sorted(series.unique().tolist())
+            if 0 < len(unique) <= self._max_unique_values:
+                values[str(col)] = unique
+        return values

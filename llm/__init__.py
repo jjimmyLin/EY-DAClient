@@ -1,13 +1,13 @@
 """
-llm 模块 - LLM 提供商集成（Gemini / Dify 共用）
+llm 模块 - LLM 提供商集成（Dify / Gemini / DeepSeek 共用）
 """
 
 
 class LLMError(Exception):
     """所有 LLM 客户端错误的统一基类。
 
-    DifyClientError 与 GeminiClientError 都继承自它，
-    这样 workflow 只需捕获 LLMError 即可同时覆盖两种提供商。
+    各 provider client error 都继承自它，
+    这样 workflow 只需捕获 LLMError 即可覆盖所有提供商。
     """
 
     def __init__(self, message: str, status_code: int | None = None) -> None:
@@ -33,6 +33,11 @@ def get_client():
         from dify.client import DifyClient
 
         return DifyClient()
+
+    if provider == "deepseek":
+        from llm.deepseek_client import DeepSeekClient
+
+        return DeepSeekClient()
 
     raise LLMError(f"未知的 LLM_PROVIDER: {provider!r}")
 

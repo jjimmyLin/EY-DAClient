@@ -1,36 +1,53 @@
 """
 dify/workflow.py
 ────────────────
-完整的分析工作流编排。
-协调：Dify API → 代码验证 → 执行 → 错误重试。
+Analysis workflow orchestration.
+LLM intent → LLM validation → LLM code → LLM code verification → Python execution.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+
+import json
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+from config.settings import settings
+from core.code_validator import CodeValidator, SecurityError
+from core.executor import ExecutionResult, Executor
 from core.preprocessor import FileMeta
 from core.prompt_builder import PromptBuilder
-from core.code_validator import CodeValidator, SecurityError
-from core.executor import Executor, ExecutionResult
 from llm import LLMError, get_client
-from config.settings import settings
+
+WorkflowEvent = dict[str, object]
+EventCallback = Callable[[WorkflowEvent], None]
 
 
 @dataclass
 class WorkflowResult:
-    """工作流执行结果"""
+    """Workflow result."""
+
     success: bool
     code: str
     execution: ExecutionResult | None
     error: str = ""
     retries_used: int = 0
+    intent_result: dict[str, Any] | None = None
+    validation_result: dict[str, Any] | None = None
+    code_verification: dict[str, Any] | None = None
+    needs_clarification: bool = False
+    clarification_question: str = ""
+    clarification_options: list[dict[str, Any]] = field(default_factory=list)
+
+
+class JsonContractError(Exception):
+    """Raised when an LLM JSON response cannot be parsed or validated."""
 
 
 class AnalysisWorkflow:
-    """数据分析工作流"""
+    """Data-analysis workflow."""
 
     def __init__(self) -> None:
-        # 按 settings.LLM_PROVIDER 选择 Gemini 或 Dify 客户端
-        # 两者都实现统一接口 generate_code(prompt) -> str
         self._client = get_client()
         self._validator = CodeValidator()
         self._executor = Executor()
@@ -42,31 +59,141 @@ class AnalysisWorkflow:
         files_meta: list[FileMeta],
         user_query: str,
     ) -> WorkflowResult:
-        """
-        执行完整的分析流程。
-        
-        流程：
-          1. 构建提示词
-          2. 调用 Dify 生成代码
-          3. 验证代码安全性
-          4. 执行代码
-          5. 如果失败，自动重试（最多 3 次）
-        
-        Args:
-            files_meta: 文件元数据列表
-            user_query: 用户的分析问题
-            
-        Returns:
-            WorkflowResult 对象（无论成功或失败都不抛异常）
-        """
-        # ── 步骤 1：构建提示词 ──
-        prompt = self._prompt_builder.build_analysis_prompt(
-            files_meta, user_query
-        )
-        
-        # ── 步骤 2：首次调用 LLM ──
+        generated = self.generate_only(files_meta, user_query)
+        if not generated.success:
+            return generated
+        return self.execute_only(generated.code, files_meta)
+
+    def generate_only(
+        self,
+        files_meta: list[FileMeta],
+        user_query: str,
+        event_callback: EventCallback | None = None,
+    ) -> WorkflowResult:
+        """Understand intent, validate it, generate code, and verify code."""
         try:
-            code = self._call_llm(prompt)
+            self._emit(event_callback, "status", "Understanding user intent")
+            intent = self._call_json_stage(
+                self._prompt_builder.build_intent_prompt(files_meta, user_query),
+                required_fields=[
+                    "status",
+                    "understanding",
+                    "requested_entities",
+                    "candidate_columns",
+                    "uncertainties",
+                ],
+                stage_name="intent",
+            )
+            self._emit(
+                event_callback,
+                "intent_result",
+                "Intent understood",
+                delta=json.dumps(intent, ensure_ascii=False, indent=2),
+            )
+
+            self._emit(event_callback, "status", "Validating intent against data")
+            validation = self._call_json_stage(
+                self._prompt_builder.build_validation_prompt(
+                    files_meta, user_query, intent
+                ),
+                required_fields=[
+                    "status",
+                    "evidence",
+                    "blocking_issue",
+                    "question",
+                    "options",
+                    "confirmed_intent",
+                ],
+                stage_name="intent validation",
+            )
+            self._emit(
+                event_callback,
+                "validation_result",
+                "Intent validation completed",
+                delta=json.dumps(validation, ensure_ascii=False, indent=2),
+            )
+
+            if validation.get("status") != "ready":
+                return self._clarification_result(intent, validation)
+
+            confirmed_intent = validation.get("confirmed_intent")
+            if not isinstance(confirmed_intent, dict) or not validation.get("evidence"):
+                validation["status"] = "needs_clarification"
+                validation["blocking_issue"] = (
+                    validation.get("blocking_issue")
+                    or "验证结果缺少足够的数据证据，不能安全继续。"
+                )
+                validation["question"] = (
+                    validation.get("question")
+                    or "请补充你希望如何分析这份数据。"
+                )
+                return self._clarification_result(intent, validation)
+
+            self._emit(event_callback, "status", "Generating verified Python code")
+            code = self._call_llm(
+                self._prompt_builder.build_analysis_prompt(
+                    files_meta, user_query, confirmed_intent
+                ),
+                event_callback=event_callback,
+            )
+
+            self._emit(event_callback, "status", "Validating generated code safety")
+            validation_result = self._validator.validate(code)
+            validation_result.raise_if_unsafe()
+
+            self._emit(event_callback, "status", "Verifying code against intent")
+            code_verification = self._call_json_stage(
+                self._prompt_builder.build_code_verification_prompt(
+                    user_query, confirmed_intent, code
+                ),
+                required_fields=["status", "issues", "fix_instruction"],
+                stage_name="code verification",
+            )
+            self._emit(
+                event_callback,
+                "code_verification",
+                "Code verification completed",
+                delta=json.dumps(code_verification, ensure_ascii=False, indent=2),
+            )
+
+            if code_verification.get("status") != "ready":
+                return WorkflowResult(
+                    success=False,
+                    code=code,
+                    execution=None,
+                    error=(
+                        code_verification.get("fix_instruction")
+                        or "生成代码未通过意图验证。"
+                    ),
+                    intent_result=intent,
+                    validation_result=validation,
+                    code_verification=code_verification,
+                )
+
+            self._emit(event_callback, "status", "Generated code is ready")
+            return WorkflowResult(
+                success=True,
+                code=code,
+                execution=None,
+                intent_result=intent,
+                validation_result=validation,
+                code_verification=code_verification,
+            )
+
+        except SecurityError as e:
+            return WorkflowResult(
+                success=False,
+                code="",
+                execution=None,
+                error=f"❌ 安全检查失败: {str(e)}",
+            )
+        except JsonContractError as e:
+            return WorkflowResult(
+                success=False,
+                code="",
+                execution=None,
+                error=f"❌ LLM 结构化输出无效: {str(e)}",
+            )
         except LLMError as e:
             return WorkflowResult(
                 success=False,
@@ -75,84 +202,119 @@ class AnalysisWorkflow:
                 error=f"❌ LLM API 错误: {str(e)}",
             )
 
-        retries = 0
-
-        # ── 步骤 3-5：验证、执行、重试循环 ──
-        while retries <= self._max_retries:
-            
-            # 验证代码安全性
-            try:
-                validation = self._validator.validate(code)
-                validation.raise_if_unsafe()
-            except SecurityError as e:
-                return WorkflowResult(
-                    success=False,
-                    code=code,
-                    execution=None,
-                    error=f"❌ 安全检查失败: {str(e)}",
-                )
-
-            # 执行代码
-            execution_result = self._executor.run(code, files_meta)
-
-            # 如果成功，直接返回
-            if execution_result.success:
-                return WorkflowResult(
-                    success=True,
-                    code=code,
-                    execution=execution_result,
-                    retries_used=retries,
-                )
-
-            # 如果已达到重试次数上限，返回失败
-            if retries >= self._max_retries:
-                return WorkflowResult(
-                    success=False,
-                    code=code,
-                    execution=execution_result,
-                    error=f"❌ 执行失败，已重试 {retries} 次",
-                    retries_used=retries,
-                )
-
-            # ── 执行失败，请求 LLM 修复 ──
-            retry_prompt = self._prompt_builder.build_error_retry_prompt(
-                code, execution_result.stderr, user_query
-            )
-
-            try:
-                code = self._call_llm(retry_prompt)
-                retries += 1
-            except LLMError as e:
-                return WorkflowResult(
-                    success=False,
-                    code=code,
-                    execution=execution_result,
-                    error=f"❌ 重试时 LLM API 错误: {str(e)}",
-                    retries_used=retries,
-                )
-
-        # 不应该到达这里，但以防万一
+    def execute_only(
+        self,
+        code: str,
+        files_meta: list[FileMeta],
+        event_callback: EventCallback | None = None,
+    ) -> WorkflowResult:
+        """Execute approved code."""
+        self._emit(event_callback, "status", "Executing approved code")
+        result = self._executor.run(code, files_meta)
+        self._emit(
+            event_callback,
+            "execution_output" if result.success else "execution_error",
+            "Execution finished" if result.success else "Execution failed",
+            delta=result.stdout if result.success else result.stderr,
+            section="execution",
+        )
         return WorkflowResult(
-            success=False,
+            success=result.success,
             code=code,
-            execution=None,
-            error="❌ 未知错误",
-            retries_used=retries,
+            execution=result,
+            error="" if result.success else (result.stderr or "执行失败"),
         )
 
-    # ─────────────────────────────────────────────────────────────────
+    def _clarification_result(
+        self,
+        intent: dict[str, Any],
+        validation: dict[str, Any],
+    ) -> WorkflowResult:
+        options = validation.get("options")
+        if not isinstance(options, list):
+            options = []
+        question = validation.get("question") or validation.get("blocking_issue")
+        if not question:
+            question = "这个分析请求还不够明确，请补充你希望如何分析。"
+        return WorkflowResult(
+            success=False,
+            code="",
+            execution=None,
+            error=validation.get("blocking_issue", ""),
+            intent_result=intent,
+            validation_result=validation,
+            needs_clarification=True,
+            clarification_question=str(question),
+            clarification_options=[
+                option for option in options if isinstance(option, dict)
+            ],
+        )
 
-    def _call_llm(self, prompt: dict) -> str:
-        """
-        调用所选 LLM 提供商（Gemini 或 Dify）生成代码。
+    def _call_json_stage(
+        self,
+        prompt: dict,
+        required_fields: list[str],
+        stage_name: str,
+    ) -> dict[str, Any]:
+        raw = self._call_llm(prompt, event_callback=None)
+        try:
+            return self._parse_json_object(raw, required_fields)
+        except JsonContractError as first_error:
+            repair_prompt = self._prompt_builder.build_json_repair_prompt(
+                raw, str(first_error)
+            )
+            repaired = self._call_llm(repair_prompt, event_callback=None)
+            try:
+                return self._parse_json_object(repaired, required_fields)
+            except JsonContractError as second_error:
+                raise JsonContractError(
+                    f"{stage_name} JSON 修复失败: {second_error}"
+                ) from second_error
 
-        Args:
-            prompt: 包含 system、context、query 的字典
+    def _parse_json_object(
+        self,
+        raw: str,
+        required_fields: list[str],
+    ) -> dict[str, Any]:
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
 
-        Returns:
-            生成的 Python 代码
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise JsonContractError(f"不是合法 JSON: {e}") from e
 
-        Raises:
-            LLMError: API 调用失败或未返回代码
-        """
-        return self._client.generate_code(prompt)
+        if not isinstance(parsed, dict):
+            raise JsonContractError("JSON 顶层必须是对象")
+
+        missing = [field for field in required_fields if field not in parsed]
+        if missing:
+            raise JsonContractError(f"缺少字段: {', '.join(missing)}")
+
+        return parsed
+
+    def _call_llm(
+        self,
+        prompt: dict,
+        event_callback: EventCallback | None = None,
+    ) -> str:
+        return self._client.generate_code(prompt, event_callback=event_callback)
+
+    @staticmethod
+    def _emit(
+        event_callback: EventCallback | None,
+        event_type: str,
+        message: str,
+        **extra: object,
+    ) -> None:
+        if event_callback is None:
+            return
+        event: WorkflowEvent = {"type": event_type, "message": message}
+        event.update(extra)
+        event_callback(event)

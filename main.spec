@@ -1,12 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
+console_enabled = os.getenv('PYINSTALLER_CONSOLE', '0') == '1'
 
 a = Analysis(
-    ['app\\main.py'],
+    ['app/main.py'],
     pathex=['.'],
     binaries=[],
     datas=[],
-    hiddenimports=['llm', 'llm.gemini_client'],
+    hiddenimports=[
+        'dify.client',
+        'dify.workflow',
+        'llm',
+        'llm.gemini_client',
+        'llm.deepseek_client',
+        'matplotlib',
+        'matplotlib.backends.backend_agg',
+        'matplotlib.pyplot',
+        'pandas',
+        'openpyxl',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -21,12 +35,12 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='main',
+    name='EY-DAClient',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    console=True,
+    upx=False,
+    console=console_enabled,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -38,7 +52,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
-    name='main',
+    name='EY-DAClient',
 )

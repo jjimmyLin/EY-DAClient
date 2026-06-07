@@ -8,9 +8,13 @@ dify/client.py
 from __future__ import annotations
 import httpx
 import time
+from collections.abc import Callable
 from typing import Any
 from config.settings import settings
 from llm import LLMError
+
+WorkflowEvent = dict[str, object]
+EventCallback = Callable[[WorkflowEvent], None]
 
 
 class DifyClientError(LLMError):
@@ -34,7 +38,11 @@ class DifyClient:
         self._max_retries = 3
         self._retry_delay = 1  # 秒
 
-    def generate_code(self, prompt: dict) -> str:
+    def generate_code(
+        self,
+        prompt: dict,
+        event_callback: EventCallback | None = None,
+    ) -> str:
         """统一接口：根据提示词生成 Python 代码。
 
         与 GeminiClient.generate_code 保持一致，便于 workflow 透明切换提供商。
@@ -58,8 +66,17 @@ class DifyClient:
             "user": "local-client",
         }
 
+        self._emit(event_callback, "status", "Sending Dify workflow request")
         response = self.post_webhook(payload)
+        self._emit(event_callback, "status", "Dify workflow response received")
         code = self.extract_code_from_response(response)
+        self._emit(
+            event_callback,
+            "content_delta",
+            "Dify generated code received",
+            delta=code,
+            section="code",
+        )
 
         if not code:
             raise DifyClientError(400, "Dify 未返回代码")
@@ -157,13 +174,27 @@ class DifyClient:
             ValueError: 无法从响应中提取代码
         """
         try:
-            # 尝试不同的响应格式
-            code = (
-                response.get("data", {}).get("outputs", {}).get("code") or
-                response.get("answer") or
-                response.get("code") or
-                ""
-            )
+            outputs = response.get("data", {}).get("outputs") or {}
+            code = ""
+
+            if isinstance(outputs, dict):
+                code = (
+                    outputs.get("code") or
+                    outputs.get("result") or
+                    outputs.get("answer") or
+                    ""
+                )
+                if not code:
+                    code = next(
+                        (
+                            value for value in outputs.values()
+                            if isinstance(value, str) and value.strip()
+                        ),
+                        "",
+                    )
+
+            # 尝试旧版/备用响应格式
+            code = code or response.get("answer") or response.get("code") or ""
             
             if not code:
                 raise ValueError("响应中未找到代码")
@@ -189,3 +220,16 @@ class DifyClient:
             lines = lines[:-1]
         
         return "\n".join(lines).strip()
+
+    @staticmethod
+    def _emit(
+        event_callback: EventCallback | None,
+        event_type: str,
+        message: str,
+        **extra: object,
+    ) -> None:
+        if event_callback is None:
+            return
+        event: WorkflowEvent = {"type": event_type, "message": message}
+        event.update(extra)
+        event_callback(event)
