@@ -10,16 +10,17 @@ import httpx
 import time
 from typing import Any
 from config.settings import settings
+from llm import LLMError
 
 
-class DifyClientError(Exception):
+class DifyClientError(LLMError):
     """Dify API 错误"""
-    
+
     def __init__(self, status_code: int, body: str) -> None:
-        self.status_code = status_code
         self.body = body
         super().__init__(
-            f"Dify API 错误 {status_code}: {body[:200]}"
+            f"Dify API 错误 {status_code}: {body[:200]}",
+            status_code=status_code,
         )
 
 
@@ -32,6 +33,38 @@ class DifyClient:
         self._timeout = settings.DIFY_TIMEOUT
         self._max_retries = 3
         self._retry_delay = 1  # 秒
+
+    def generate_code(self, prompt: dict) -> str:
+        """统一接口：根据提示词生成 Python 代码。
+
+        与 GeminiClient.generate_code 保持一致，便于 workflow 透明切换提供商。
+
+        Args:
+            prompt: 包含 system、context、query 的字典（PromptBuilder 输出）。
+
+        Returns:
+            生成的 Python 代码字符串。
+
+        Raises:
+            DifyClientError: API 调用失败或未返回代码。
+        """
+        payload = {
+            "inputs": {
+                "system": prompt.get("system", ""),
+                "context": prompt.get("context", ""),
+                "query": prompt.get("query", ""),
+            },
+            "response_mode": "blocking",
+            "user": "local-client",
+        }
+
+        response = self.post_webhook(payload)
+        code = self.extract_code_from_response(response)
+
+        if not code:
+            raise DifyClientError(400, "Dify 未返回代码")
+
+        return code
 
     def post_webhook(self, payload: dict) -> dict:
         """

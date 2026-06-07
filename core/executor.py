@@ -147,9 +147,17 @@ class Executor:
         stdout = ""
         stderr = ""
 
+        # 在 PyInstaller 打包环境中，sys.executable 是应用自身而非解释器，
+        # 直接传脚本路径会重启整个 GUI。改用 worker 模式参数让 exe 把脚本
+        # 作为子进程执行（见 app/main.py 顶部的 --run-script 拦截）。
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--run-script", script_path]
+        else:
+            cmd = [sys.executable, script_path]
+
         try:
             result = subprocess.run(
-                [sys.executable, script_path],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=self._timeout,

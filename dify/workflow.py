@@ -11,7 +11,7 @@ from core.preprocessor import FileMeta
 from core.prompt_builder import PromptBuilder
 from core.code_validator import CodeValidator, SecurityError
 from core.executor import Executor, ExecutionResult
-from dify.client import DifyClient, DifyClientError
+from llm import LLMError, get_client
 from config.settings import settings
 
 
@@ -29,7 +29,9 @@ class AnalysisWorkflow:
     """数据分析工作流"""
 
     def __init__(self) -> None:
-        self._client = DifyClient()
+        # 按 settings.LLM_PROVIDER 选择 Gemini 或 Dify 客户端
+        # 两者都实现统一接口 generate_code(prompt) -> str
+        self._client = get_client()
         self._validator = CodeValidator()
         self._executor = Executor()
         self._prompt_builder = PromptBuilder()
@@ -62,15 +64,15 @@ class AnalysisWorkflow:
             files_meta, user_query
         )
         
-        # ── 步骤 2：首次调用 Dify ──
+        # ── 步骤 2：首次调用 LLM ──
         try:
-            code = self._call_dify(prompt)
-        except DifyClientError as e:
+            code = self._call_llm(prompt)
+        except LLMError as e:
             return WorkflowResult(
                 success=False,
                 code="",
                 execution=None,
-                error=f"❌ Dify API 错误: {str(e)}",
+                error=f"❌ LLM API 错误: {str(e)}",
             )
 
         retries = 0
@@ -112,20 +114,20 @@ class AnalysisWorkflow:
                     retries_used=retries,
                 )
 
-            # ── 执行失败，请求 Dify 修复 ──
+            # ── 执行失败，请求 LLM 修复 ──
             retry_prompt = self._prompt_builder.build_error_retry_prompt(
                 code, execution_result.stderr, user_query
             )
 
             try:
-                code = self._call_dify(retry_prompt)
+                code = self._call_llm(retry_prompt)
                 retries += 1
-            except DifyClientError as e:
+            except LLMError as e:
                 return WorkflowResult(
                     success=False,
                     code=code,
                     execution=execution_result,
-                    error=f"❌ 重试时 Dify API 错误: {str(e)}",
+                    error=f"❌ 重试时 LLM API 错误: {str(e)}",
                     retries_used=retries,
                 )
 
@@ -140,36 +142,17 @@ class AnalysisWorkflow:
 
     # ─────────────────────────────────────────────────────────────────
 
-    def _call_dify(self, prompt: dict) -> str:
+    def _call_llm(self, prompt: dict) -> str:
         """
-        调用 Dify Webhook 生成代码。
-        
+        调用所选 LLM 提供商（Gemini 或 Dify）生成代码。
+
         Args:
             prompt: 包含 system、context、query 的字典
-            
+
         Returns:
             生成的 Python 代码
-            
+
         Raises:
-            DifyClientError: API 调用失败
+            LLMError: API 调用失败或未返回代码
         """
-        payload = {
-            "inputs": {
-                "system": prompt.get("system", ""),
-                "context": prompt.get("context", ""),
-                "query": prompt.get("query", ""),
-            },
-            "response_mode": "blocking",
-            "user": "local-client",
-        }
-
-        # 调用 Dify Webhook
-        response = self._client.post_webhook(payload)
-
-        # 从响应中提取代码
-        code = self._client.extract_code_from_response(response)
-
-        if not code:
-            raise DifyClientError(400, "Dify 未返回代码")
-
-        return code
+        return self._client.generate_code(prompt)
