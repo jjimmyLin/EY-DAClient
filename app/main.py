@@ -74,6 +74,40 @@ def _log_unraisable_exception(args) -> None:
     )
 
 
+def _flush_and_shutdown_logging() -> None:
+    """Persist logs before short-lived worker processes exit."""
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+    logging.shutdown()
+
+
+def _safe_print_exception() -> None:
+    """Print tracebacks only when a windowed executable has usable stderr."""
+    if sys.stderr is None:
+        return
+    try:
+        traceback.print_exc()
+    except Exception:
+        pass
+
+
+def _append_worker_failure_fallback(script_path: str, traceback_text: str) -> None:
+    """Write a last-resort worker failure entry if logging handlers fail."""
+    log_file = app_log_file()
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as fallback_log:
+            fallback_log.write(
+                f"Worker failed while executing: {script_path}\n"
+                f"{traceback_text}\n"
+            )
+    except Exception:
+        pass
+
+
 def _run_worker(script_path: str) -> int:
     """
     Execute generated analysis code in worker mode.
@@ -82,16 +116,33 @@ def _run_worker(script_path: str) -> int:
     starts `<exe> --run-script <script>` so this process runs analysis code
     instead of opening the GUI again.
     """
+    log_file = app_log_file()
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
     try:
         logging.info("Worker started for script: %s", script_path)
         with open(script_path, encoding="utf-8") as script_file:
             source = script_file.read()
         exec(compile(source, script_path, "exec"), {"__name__": "__main__"})
         logging.info("Worker finished successfully: %s", script_path)
+        _flush_and_shutdown_logging()
         return 0
     except Exception:
+        traceback_text = traceback.format_exc()
+        exception_line = traceback_text.strip().splitlines()[-1]
         logging.exception("Worker failed while executing: %s", script_path)
-        traceback.print_exc()
+        _safe_print_exception()
+        _flush_and_shutdown_logging()
+
+        try:
+            content = log_file.read_text(encoding="utf-8")
+        except Exception:
+            content = ""
+        if (
+            "Worker failed while executing" not in content
+            or exception_line not in content
+        ):
+            _append_worker_failure_fallback(script_path, traceback_text)
         return 1
 
 
@@ -120,7 +171,7 @@ def _run_gui() -> int:
         return exit_code
     except Exception:
         logging.exception("Application startup/runtime failure")
-        traceback.print_exc()
+        _safe_print_exception()
         return 1
 
 

@@ -50,31 +50,97 @@ jobs:
             $PSNativeCommandUseErrorActionPreference = $false
           }
 
+          function Show-SmokeDiagnostics {
+            param(
+              [string] $ExePath,
+              [int] $ExitCode,
+              [string] $LogDir,
+              [string] $AppLog,
+              [string] $FaultLog
+            )
+
+            Write-Host "Smoke diagnostics:"
+            Write-Host "  exe: $ExePath"
+            Write-Host "  exit_code: $ExitCode"
+            Write-Host "  LOCALAPPDATA: $env:LOCALAPPDATA"
+            Write-Host "  RUNNER_TEMP: $env:RUNNER_TEMP"
+            Write-Host "  expected_log_dir: $LogDir"
+            Write-Host "  expected_app_log: $AppLog"
+            Write-Host "  expected_fault_log: $FaultLog"
+
+            if (Test-Path $LogDir) {
+              Write-Host "Expected log directory contents:"
+              Get-ChildItem -Force -Recurse $LogDir | ForEach-Object {
+                Write-Host "  $($_.FullName)"
+              }
+            } else {
+              Write-Host "Expected log directory does not exist."
+            }
+
+            foreach ($root in @($env:LOCALAPPDATA, $env:RUNNER_TEMP)) {
+              if (-not $root -or -not (Test-Path $root)) {
+                continue
+              }
+              Write-Host "Candidate EY-DAClient paths under ${root}:"
+              Get-ChildItem -Force -Recurse $root -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -like "*EY-DAClient*" } |
+                Select-Object -First 50 |
+                ForEach-Object { Write-Host "  $($_.FullName)" }
+            }
+          }
+
           $logDir = Join-Path $env:LOCALAPPDATA "EY-DAClient\logs"
           Remove-Item -Recurse -Force $logDir -ErrorAction SilentlyContinue
 
           $scriptPath = Join-Path $env:RUNNER_TEMP "worker_fail.py"
           Set-Content -Path $scriptPath -Value "raise RuntimeError('intentional worker smoke failure')"
 
-          & "dist/EY-DAClient/EY-DAClient.exe" --run-script $scriptPath
-          if ($LASTEXITCODE -eq 0) {
-            throw "Worker smoke failure unexpectedly returned success"
-          }
+          $exePath = (Resolve-Path "dist/EY-DAClient/EY-DAClient.exe").Path
+          $process = Start-Process `
+            -FilePath $exePath `
+            -ArgumentList @("--run-script", "`"$scriptPath`"") `
+            -Wait `
+            -PassThru `
+            -NoNewWindow
 
           $appLog = Join-Path $logDir "app.log"
           $faultLog = Join-Path $logDir "faulthandler.log"
+          if ($process.ExitCode -eq 0) {
+            Show-SmokeDiagnostics $exePath $process.ExitCode $logDir $appLog $faultLog
+            throw "Worker smoke failure unexpectedly returned success"
+          }
+
+          $deadline = (Get-Date).AddSeconds(10)
+          $content = ""
+          do {
+            if ((Test-Path $appLog) -and (Test-Path $faultLog)) {
+              $content = Get-Content $appLog -Raw
+              if (
+                $content.Contains("Worker failed while executing") -and
+                $content.Contains("intentional worker smoke failure")
+              ) {
+                break
+              }
+            }
+            Start-Sleep -Milliseconds 250
+          } while ((Get-Date) -lt $deadline)
+
           if (-not (Test-Path $appLog)) {
+            Show-SmokeDiagnostics $exePath $process.ExitCode $logDir $appLog $faultLog
             throw "Expected app log was not written: $appLog"
           }
           if (-not (Test-Path $faultLog)) {
+            Show-SmokeDiagnostics $exePath $process.ExitCode $logDir $appLog $faultLog
             throw "Expected faulthandler log was not written: $faultLog"
           }
 
           $content = Get-Content $appLog -Raw
           if (-not $content.Contains("Worker failed while executing")) {
+            Show-SmokeDiagnostics $exePath $process.ExitCode $logDir $appLog $faultLog
             throw "app.log did not include the worker failure message"
           }
           if (-not $content.Contains("intentional worker smoke failure")) {
+            Show-SmokeDiagnostics $exePath $process.ExitCode $logDir $appLog $faultLog
             throw "app.log did not include the worker exception detail"
           }
 
