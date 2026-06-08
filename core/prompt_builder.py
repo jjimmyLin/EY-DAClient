@@ -27,7 +27,7 @@ _CODE_SYSTEM_PROMPT = """你是一个Python数据分析专家。
 - 统计信息
 - 低基数字符列的有限唯一值证据
 
-根据已验证的用户意图生成对应的Python代码。
+根据用户问题和数据集信息直接生成可在本地执行的Python分析代码。
 
 代码会通过字典 `dfs` 访问数据：
 - 键是文件名（例如 "sales.xlsx"）
@@ -38,9 +38,9 @@ _CODE_SYSTEM_PROMPT = """你是一个Python数据分析专家。
 1. 所有结果必须打印到stdout
 2. 如果需要图表，使用matplotlib并调用 plt.show()
 3. 禁止使用：os、subprocess、sys、open()、requests、socket、pickle、__builtins__
-4. 只能根据 confirmed_intent 写代码，不要自行扩展分析口径
-5. 数值计算必须由Python代码完成，不要在代码外口算结果
-6. 输出必须包含可审计上下文：使用的列、计算公式或筛选条件、缺失/异常数据说明
+4. 数值计算必须由Python代码完成，不要在代码外口算结果
+5. 输出必须包含可审计上下文：使用的列、计算公式或筛选条件、缺失/异常数据说明
+6. 不要依赖联网，不要访问外部文件，不要输出 markdown
 
 重要：只输出纯Python代码，不要markdown符号(```)，不要任何解释和注释。"""
 
@@ -115,9 +115,9 @@ class PromptBuilder:
             "context": context,
             "query": (
                 f"用户原始问题：{user_query}\n\n"
-                "已验证 confirmed_intent：\n"
+                "如果存在 confirmed_intent，请将其当作辅助信息；否则直接根据用户问题作答。\n"
                 f"{json.dumps(intent, ensure_ascii=False, indent=2)}\n\n"
-                "请只根据 confirmed_intent 生成 Python 代码。"
+                "请直接生成适合本地执行的 Python 分析代码。"
             ),
         }
 

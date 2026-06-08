@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QPlainTextEdit,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -150,19 +151,16 @@ class MainWindow(QMainWindow):
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
         
-        self.loaded_files = {}  # Store file_path -> FileMeta mapping
-        self._pending_code = None
+        self.loaded_files = {}  # Store display key -> FileMeta mapping
         self._pending_files_meta = None
         self._pending_query = None
-        self._base_query = None
-        self._decision_context = ""
-        self._selected_model = None
         self._analysis_thread = None
         self._analysis_worker = None
         self._active_worker_mode = ""
         self._transcript = {}
         self._task_history = []
         self._active_task_id = None
+        self._generated_code = ""
 
         self._init_ui()
 
@@ -206,13 +204,19 @@ class MainWindow(QMainWindow):
         self.dataset_list = QListWidget()
         self.dataset_list.setObjectName("datasetList")
 
-        self.history_btn = QPushButton("View History")
-        self.history_btn.setObjectName("historyBtn")
-        self.history_btn.setCursor(Qt.PointingHandCursor)
+        self.devops_btn = QPushButton("DevOps Mode")
+        self.devops_btn.setObjectName("devopsBtn")
+        self.devops_btn.setCursor(Qt.PointingHandCursor)
+        self.devops_btn.setCheckable(True)
+        self.devops_btn.clicked.connect(self._on_devops_toggled)
 
         self.settings_btn = QPushButton("API Settings")
         self.settings_btn.setObjectName("settingsBtn")
         self.settings_btn.setCursor(Qt.PointingHandCursor)
+
+        self.history_btn = QPushButton("View History")
+        self.history_btn.setObjectName("historyBtn")
+        self.history_btn.setCursor(Qt.PointingHandCursor)
 
         self.api_status_label = QLabel()
         self.api_status_label.setObjectName("apiStatusLabel")
@@ -221,8 +225,9 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(QLabel("CONTEXT DATA"))
         sidebar_layout.addWidget(self.upload_btn)
         sidebar_layout.addWidget(self.dataset_list, stretch=3)
-        sidebar_layout.addWidget(self.history_btn)
+        sidebar_layout.addWidget(self.devops_btn)
         sidebar_layout.addWidget(self.settings_btn)
+        sidebar_layout.addWidget(self.history_btn)
         sidebar_layout.addWidget(self.api_status_label)
 
         sep = QFrame()
@@ -252,21 +257,57 @@ class MainWindow(QMainWindow):
         canvas_layout = QVBoxLayout(canvas_container)
         canvas_layout.setContentsMargins(40, 40, 40, 20)
 
-        self.canvas_stack = QStackedWidget()
-
         self.result_output = QTextEdit()
         self.result_output.setObjectName("resultOutput")
         self.result_output.setReadOnly(True)
         self.result_output.setPlaceholderText(
-            "Analysis results will appear here..."
+            "The execution result will appear here first."
         )
+
+        self.code_editor = QPlainTextEdit()
+        self.code_editor.setObjectName("codeEditor")
+        self.code_editor.setPlaceholderText(
+            "Generated Python code appears here and can be edited before Apply."
+        )
+        self.code_editor.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.code_editor.setTabStopDistance(
+            4 * self.code_editor.fontMetrics().horizontalAdvance(" ")
+        )
+
+        code_panel = QWidget()
+        code_panel_layout = QVBoxLayout(code_panel)
+        code_panel_layout.setContentsMargins(0, 0, 0, 0)
+        code_panel_layout.setSpacing(8)
+
+        code_header = QHBoxLayout()
+        code_label = QLabel("Editable Python")
+        code_label.setObjectName("codePanelLabel")
+        self.code_reset_btn = QPushButton("Reset Code")
+        self.code_reset_btn.setObjectName("codeResetBtn")
+        self.code_reset_btn.setCursor(Qt.PointingHandCursor)
+        self.code_reset_btn.clicked.connect(self._reset_code_to_generated)
+        code_header.addWidget(code_label)
+        code_header.addStretch()
+        code_header.addWidget(self.code_reset_btn)
+
+        code_panel_layout.addLayout(code_header)
+        code_panel_layout.addWidget(self.code_editor)
+
+        self.analysis_splitter = QSplitter(Qt.Vertical)
+        self.analysis_splitter.setHandleWidth(1)
+        self.analysis_splitter.addWidget(self.result_output)
+        self.analysis_splitter.addWidget(code_panel)
+        self.analysis_splitter.setStretchFactor(0, 3)
+        self.analysis_splitter.setStretchFactor(1, 2)
+        self.analysis_splitter.setSizes([390, 210])
 
         self.decision_panel = DecisionPanel()
         self.decision_panel.decision_made.connect(self._on_decision_made)
         self.decision_panel.decision_skipped.connect(self._on_decision_skipped)
 
-        self.canvas_stack.addWidget(self.result_output)    # index 0
-        self.canvas_stack.addWidget(self.decision_panel)   # index 1
+        self.canvas_stack = QStackedWidget()
+        self.canvas_stack.addWidget(self.analysis_splitter)   # index 0
+        self.canvas_stack.addWidget(self.decision_panel)      # index 1
 
         canvas_layout.addWidget(self.canvas_stack)
 
@@ -294,7 +335,7 @@ class MainWindow(QMainWindow):
         self.run_btn.setFixedSize(100, 48)
         self.run_btn.clicked.connect(self._on_analyze_clicked)
 
-        self.apply_btn = QPushButton("▶ Apply")
+        self.apply_btn = QPushButton("Apply")
         self.apply_btn.setObjectName("applyBtn")
         self.apply_btn.setCursor(Qt.PointingHandCursor)
         self.apply_btn.setFixedSize(100, 48)
@@ -334,6 +375,7 @@ class MainWindow(QMainWindow):
         self.settings_btn.clicked.connect(self._on_settings_clicked)
 
         self._apply_style()
+        self._sync_provider_controls()
         self._refresh_api_status()
 
     def _on_upload_clicked(self):
@@ -355,8 +397,8 @@ class MainWindow(QMainWindow):
         for file_path in files:
             try:
                 file_meta = preprocessor.process(file_path)
-                file_name = file_path.split('/')[-1]
-                
+                file_name = self._dataset_display_name(file_path)
+
                 self.loaded_files[file_name] = file_meta
                 self.dataset_list.addItem(file_name)
                 last_loaded_row = self.dataset_list.count() - 1
@@ -370,7 +412,7 @@ class MainWindow(QMainWindow):
             self.log_output.append(f"Selected dataset: {selected_name}")
 
     def _on_analyze_clicked(self):
-        """Generate analysis code using the globally configured API provider."""
+        """Generate analysis code and prepare it for review/editing."""
         selected_item = self.dataset_list.currentItem()
         query = self.prompt_input.toPlainText().strip()
 
@@ -400,51 +442,27 @@ class MainWindow(QMainWindow):
             self._refresh_api_status()
             return
 
+        self._generated_code = ""
+        self.code_editor.clear()
         self.apply_btn.setVisible(False)
         self._pending_query = query
-        self._base_query = query
         self._pending_files_meta = [file_meta]
-        self._decision_context = ""
-        self._selected_model = None
         self._create_history_task(file_name, query)
         self.log_output.append(
             f"Using provider: {settings.LLM_PROVIDER} ({self._current_model_label()})"
         )
+        self.result_output.setText("Generating Python code...")
         self._run_generate()
 
     def _on_decision_made(self, option: OptionItem) -> None:
-        """用户在决策面板中选了一个选项。"""
+        """Compatibility hook for legacy decision UI."""
         self.canvas_stack.setCurrentIndex(0)
-        if self._decision_context == "clarification":
-            chosen = option.data if isinstance(option.data, dict) else {}
-            label = chosen.get("label") or option.label
-            description = chosen.get("description") or option.description
-            base_query = self._base_query or self._pending_query or ""
-            self._pending_query = (
-                f"{base_query}\n\n"
-                f"用户已选择澄清选项：{label}\n"
-                f"选项说明：{description}"
-            )
-            self._decision_context = ""
-            self.log_output.append(f"Clarification selected: {label}")
-            self._run_generate()
-            return
-
-        self._selected_model = option.data
-        self.log_output.append(f"User selected model: {option.label}")
-        self._run_generate()
+        self.log_output.append(f"Decision selected: {option.label}")
 
     def _on_decision_skipped(self) -> None:
-        """用户跳过了决策面板（自动选择）。"""
+        """Compatibility hook for legacy decision UI."""
         self.canvas_stack.setCurrentIndex(0)
-        if self._decision_context == "clarification":
-            self._decision_context = ""
-            self.log_output.append("Clarification skipped")
-            return
-
-        self._selected_model = None
-        self.log_output.append("Auto-selecting model")
-        self._run_generate()
+        self.log_output.append("Decision skipped")
 
     def _on_settings_clicked(self) -> None:
         dialog = ApiSettingsDialog(self)
@@ -454,6 +472,19 @@ class MainWindow(QMainWindow):
                 f"API settings saved: {settings.LLM_PROVIDER} ({self._current_model_label()})"
             )
             self._refresh_api_status()
+
+    def _on_devops_toggled(self, checked: bool) -> None:
+        provider = "gemini" if checked else "dify"
+        self._set_provider_mode(provider)
+
+    def _set_provider_mode(self, provider: str) -> None:
+        provider = "gemini" if provider == "gemini" else "dify"
+        settings.write_non_secret_env({"LLM_PROVIDER": provider})
+        settings.reload()
+        settings.update_runtime(provider=provider)
+        self._sync_provider_controls()
+        self._refresh_api_status()
+        self.log_output.append(f"Mode switched to: {self._current_model_label()}")
 
     def _show_history_page(self) -> None:
         self._refresh_history_page()
@@ -522,22 +553,23 @@ class MainWindow(QMainWindow):
         missing = [key for key, present in status.items() if not present]
         if missing:
             self.api_status_label.setText(
-                f"API: {settings.LLM_PROVIDER} · missing {', '.join(missing)}"
+                f"Mode: {self._current_model_label()} | missing {', '.join(missing)}"
             )
         else:
             self.api_status_label.setText(
-                f"API: {settings.LLM_PROVIDER} · {self._current_model_label()}"
+                f"Mode: {self._current_model_label()} | ready"
             )
+        self._sync_provider_controls()
 
     def _current_model_label(self) -> str:
         if settings.LLM_PROVIDER == "gemini":
-            return settings.GEMINI_MODEL
+            return f"DevOps · {settings.GEMINI_MODEL}"
         if settings.LLM_PROVIDER == "deepseek":
-            return settings.DEEPSEEK_MODEL
-        return "workflow"
+            return f"DeepSeek · {settings.DEEPSEEK_MODEL}"
+        return "Dify primary"
 
     def _run_generate(self):
-        """生成代码并展示，等待用户点击 Apply 后再执行。"""
+        """生成代码并展示到可编辑区域，等待用户点击 Apply 后再执行。"""
         if not self._pending_query or not self._pending_files_meta:
             return
 
@@ -550,8 +582,13 @@ class MainWindow(QMainWindow):
         )
 
     def _on_apply_clicked(self):
-        """执行用户已审核的代码。"""
-        if not self._pending_code or not self._pending_files_meta:
+        """Execute the code currently in the editor."""
+        if not self._pending_files_meta:
+            return
+
+        code = self.code_editor.toPlainText().strip()
+        if not code:
+            self.result_output.setText("No Python code is available to execute yet.")
             return
 
         self._append_system_event("Executing approved code...")
@@ -560,7 +597,7 @@ class MainWindow(QMainWindow):
         self._start_analysis_worker(
             mode="execute",
             files_meta=self._pending_files_meta,
-            code=self._pending_code,
+            code=code,
         )
 
     def _start_analysis_worker(
@@ -612,20 +649,10 @@ class MainWindow(QMainWindow):
             self._transcript["thinking"] += delta
         elif event_type == "content_delta":
             self._transcript["code"] += delta
+            if self._active_worker_mode == "generate":
+                self.code_editor.setPlainText(self._transcript["code"])
         elif event_type == "tool_delta":
             self._transcript["tools"] += delta
-        elif event_type == "intent_result":
-            self._transcript["intent"] = delta
-            if message:
-                self._append_system_event(message)
-        elif event_type == "validation_result":
-            self._transcript["validation"] = delta
-            if message:
-                self._append_system_event(message)
-        elif event_type == "code_verification":
-            self._transcript["code_verification"] = delta
-            if message:
-                self._append_system_event(message)
         elif event_type in ("execution_output", "execution_error"):
             self._transcript["execution"] += delta
             if message:
@@ -638,53 +665,41 @@ class MainWindow(QMainWindow):
 
     def _on_worker_finished(self, result) -> None:
         if self._active_worker_mode == "generate":
-            self._transcript["intent"] = self._format_json(result.intent_result)
-            self._transcript["validation"] = self._format_json(
-                result.validation_result
-            )
-            self._transcript["code_verification"] = self._format_json(
-                result.code_verification
-            )
-
-            if result.needs_clarification:
-                self._pending_code = None
-                self.apply_btn.setVisible(False)
-                self._append_system_event("Intent needs clarification before code generation.")
-                self.log_output.append("⚠ Intent needs clarification")
-                self._update_history_task("Needs clarification")
-                self._show_clarification(result)
-
-            elif result.success:
-                self._pending_code = result.code
-                self._transcript["code"] = result.code
-                self._append_system_event("Code generated and verified. Review and click Apply.")
-                self.log_output.append("✓ Code generated and verified — review and click Apply")
+            if result.success:
+                self._generated_code = result.code
+                self.code_editor.setPlainText(result.code)
+                self.code_editor.document().setModified(False)
+                self._append_system_event("Code generated. Review and edit it before Apply.")
+                self.log_output.append("✓ Code generated and ready for review")
+                self._transcript["execution"] = (
+                    "Python code is ready.\n\n"
+                    "Review the editable code below, adjust it if needed, then click Apply."
+                )
                 self.apply_btn.setVisible(True)
                 self._update_history_task("Awaiting Apply")
             else:
                 self._append_system_event(f"Generation failed: {result.error}")
                 self.log_output.append(f"✗ Generation failed: {result.error}")
+                self._transcript["execution"] = f"Generation failed:\n{result.error}"
                 self._pending_query = None
                 self._pending_files_meta = None
-                self._transcript["execution"] = result.error
                 self._update_history_task("Failed", result.error, finished=True)
 
         elif self._active_worker_mode == "execute":
             if result.success:
                 output_text = result.execution.stdout if result.execution else ""
-                self._transcript["execution"] = output_text
                 self._append_system_event("Execution completed")
                 self.log_output.append("✓ Execution completed")
+                self._transcript["execution"] = output_text or "Execution completed with no stdout."
                 self._update_history_task("Completed", finished=True)
             else:
                 error_text = (
                     result.execution.stderr if result.execution else result.error
                 )
-                self._transcript["execution"] = error_text
                 self._append_system_event("Execution failed")
                 self.log_output.append(f"✗ Execution failed: {result.error}")
+                self._transcript["execution"] = f"Execution failed:\n{error_text}"
                 self._update_history_task("Failed", result.error, finished=True)
-            self._pending_code = None
             self._pending_files_meta = None
 
         self._render_transcript()
@@ -692,8 +707,8 @@ class MainWindow(QMainWindow):
 
     def _on_worker_error(self, error: str) -> None:
         self._append_system_event(f"Worker error: {error}")
-        self._transcript["execution"] = error
         self.log_output.append(f"✗ Worker error: {error}")
+        self._transcript["execution"] = f"Worker error:\n{error}"
         self._render_transcript()
         self._pending_query = None
         self._pending_files_meta = None
@@ -709,19 +724,20 @@ class MainWindow(QMainWindow):
         self.run_btn.setEnabled(not busy)
         self.upload_btn.setEnabled(not busy)
         self.settings_btn.setEnabled(not busy)
+        self.devops_btn.setEnabled(not busy)
+        self.code_reset_btn.setEnabled(not busy)
+        self.code_editor.setEnabled(not busy)
         if busy:
             self.run_btn.setText("Working")
             self.apply_btn.setEnabled(False)
         else:
             self.run_btn.setText("Analyze")
             self.apply_btn.setEnabled(True)
+            self._sync_provider_controls()
 
     def _reset_transcript(self) -> None:
         self._transcript = {
             "system": [],
-            "intent": "",
-            "validation": "",
-            "code_verification": "",
             "thinking": "",
             "tools": "",
             "code": "",
@@ -740,56 +756,36 @@ class MainWindow(QMainWindow):
         sections = []
         system_text = "\n".join(f"- {item}" for item in self._transcript["system"])
         sections.append("## System Status\n" + (system_text or "- Idle"))
-        if self._transcript["intent"]:
-            sections.append("## 意图理解\n" + self._transcript["intent"].strip())
-        if self._transcript["validation"]:
-            sections.append("## 验证结果\n" + self._transcript["validation"].strip())
-        if self._transcript["code"]:
-            sections.append("## Generated Code\n" + self._transcript["code"].strip())
-        if self._transcript["code_verification"]:
-            sections.append(
-                "## 代码验证\n" + self._transcript["code_verification"].strip()
-            )
         if self._transcript["execution"]:
             sections.append("## Execution\n" + self._transcript["execution"].strip())
         self.result_output.setPlainText("\n\n".join(sections))
 
-    def _show_clarification(self, result) -> None:
-        options = []
-        for option in result.clarification_options:
-            label = str(option.get("label") or option.get("id") or "Option")
-            description = str(option.get("description") or "")
-            tag = "recommended" if option.get("recommended") else ""
-            options.append(
-                OptionItem(
-                    label=label,
-                    description=description,
-                    tag=tag,
-                    data=option,
-                )
-            )
+    def _sync_provider_controls(self) -> None:
+        is_devops = settings.LLM_PROVIDER == "gemini"
+        self.devops_btn.setChecked(is_devops)
+        self.devops_btn.setText("DevOps Mode: Gemini" if is_devops else "Primary Mode: Dify")
 
-        if not options:
-            options.append(
-                OptionItem(
-                    label="补充说明",
-                    description=result.clarification_question,
-                    tag="recommended",
-                    data={
-                        "label": "补充说明",
-                        "description": result.clarification_question,
-                    },
-                )
-            )
+    def _dataset_display_name(self, file_path: str) -> str:
+        from pathlib import Path
 
-        self._decision_context = "clarification"
-        self.canvas_stack.setCurrentIndex(1)
-        self.decision_panel.show_decision(
-            title="Clarify Analysis",
-            description=result.clarification_question,
-            options=options,
-            allow_skip=False,
-        )
+        path = Path(file_path)
+        base_name = path.name
+        if base_name not in self.loaded_files:
+            return base_name
+
+        stem = path.stem
+        suffix = path.suffix
+        index = 2
+        while True:
+            candidate = f"{stem} ({index}){suffix}"
+            if candidate not in self.loaded_files:
+                return candidate
+            index += 1
+
+    def _reset_code_to_generated(self) -> None:
+        if not self._generated_code:
+            return
+        self.code_editor.setPlainText(self._generated_code)
 
     @staticmethod
     def _format_json(value) -> str:
@@ -872,6 +868,7 @@ class MainWindow(QMainWindow):
 
             /* Buttons */
             QPushButton#uploadBtn,
+            QPushButton#devopsBtn,
             QPushButton#historyBtn,
             QPushButton#settingsBtn {
                 background-color: #FFFFFF;
@@ -885,9 +882,20 @@ class MainWindow(QMainWindow):
             }
 
             QPushButton#uploadBtn:hover,
+            QPushButton#devopsBtn:hover,
             QPushButton#historyBtn:hover,
             QPushButton#settingsBtn:hover {
                 background-color: #F3F4F6;
+            }
+
+            QPushButton#devopsBtn:checked {
+                background-color: #111827;
+                color: #FFFFFF;
+                border-color: #111827;
+            }
+
+            QPushButton#devopsBtn:checked:hover {
+                background-color: #1F2937;
             }
 
             QLabel#apiStatusLabel {
@@ -943,6 +951,39 @@ class MainWindow(QMainWindow):
                 font-size: 15px;
                 line-height: 1.6;
                 color: #111827;
+            }
+
+            QLabel#codePanelLabel {
+                color: #374151;
+                font-size: 12px;
+                letter-spacing: 0;
+            }
+
+            QPushButton#codeResetBtn {
+                background-color: #FFFFFF;
+                color: #374151;
+                font-size: 12px;
+                font-weight: 600;
+                border: 1px solid #D1D5DB;
+                border-radius: 6px;
+                padding: 6px 10px;
+                height: 28px;
+            }
+
+            QPushButton#codeResetBtn:hover {
+                background-color: #F9FAFB;
+            }
+
+            QPlainTextEdit#codeEditor {
+                background-color: #0B1220;
+                color: #E5E7EB;
+                border: 1px solid #1F2937;
+                border-radius: 10px;
+                padding: 12px;
+                font-family: "Cascadia Mono", "Consolas", monospace;
+                font-size: 12px;
+                selection-background-color: #1D4ED8;
+                selection-color: #FFFFFF;
             }
 
             /* ========================================================================= */

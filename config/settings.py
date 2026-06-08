@@ -22,9 +22,9 @@ class Settings:
     ENV_FILE = ENV_FILE
 
     # ── LLM 提供商选择 ─────────────────────────────────────
-    # 可选值: "gemini" (默认), "dify", "deepseek"
+    # 可选值: "dify" (默认), "gemini", "deepseek"
     VALID_LLM_PROVIDERS = ("dify", "gemini", "deepseek")
-    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
+    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "dify").strip().lower()
 
     # ── Dify 配置 ──────────────────────────────────────────
     DIFY_BASE_URL = os.getenv("DIFY_BASE_URL", "https://api.dify.ai/v1")
@@ -219,8 +219,29 @@ class Settings:
 
     @classmethod
     def write_non_secret_env(cls, updates: dict[str, str]) -> None:
-        """Write non-secret settings to .env, removing duplicate managed keys."""
-        allowed = {"LLM_PROVIDER", "GEMINI_MODEL", "DEEPSEEK_MODEL"}
+        """Write managed settings to .env, removing duplicate managed keys."""
+        allowed = {
+            "LLM_PROVIDER",
+            "GEMINI_MODEL",
+            "GEMINI_API_KEY",
+            "GEMINI_BASE_URL",
+            "GEMINI_TIMEOUT",
+            "GEMINI_THINKING_BUDGET",
+            "GEMINI_THINKING_LEVEL",
+            "GEMINI_MODEL_FALLBACKS",
+            "DIFY_API_KEY",
+            "DIFY_WEBHOOK_URL",
+            "DIFY_BASE_URL",
+            "DIFY_TIMEOUT",
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_TIMEOUT",
+            "DEEPSEEK_THINKING_ENABLED",
+            "DEEPSEEK_REASONING_EFFORT",
+            "DEEPSEEK_STREAM",
+            "DEEPSEEK_MODEL_FALLBACKS",
+        }
         invalid = set(updates) - allowed
         if invalid:
             raise ValueError(f"Refusing to write secret/unknown keys: {sorted(invalid)}")

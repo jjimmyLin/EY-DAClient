@@ -1,16 +1,16 @@
 # EY-DAClient
 
 Desktop data-analysis assistant built with PySide6. The app loads spreadsheet
-files, asks an LLM to understand and validate the user's analysis intent,
-generates Python analysis code, and runs that code in an isolated worker
-process.
+files, sends dataset metadata plus the user's question to Dify, receives Python
+analysis code, lets the user edit that code, and then runs it locally in an
+isolated worker process.
 
 ## Features
 
 - Spreadsheet preprocessing with sheet metadata and sample values.
-- Intent validation before code generation, including clarification prompts when
-  the requested analysis is not supported by the uploaded data.
-- Multi-provider LLM configuration for Gemini, DeepSeek, and Dify.
+- Dify-first analysis workflow with an editable code review screen.
+- DevOps mode switch for Gemini, with Dify as the default product path.
+- Multi-provider LLM configuration for Dify, Gemini, and DeepSeek.
 - Worker-mode execution for PyInstaller builds so generated code can run without
   opening another GUI instance.
 - File-backed app and crash logging for packaged Windows builds.
@@ -28,11 +28,12 @@ cp .env.example .env
 ```
 
 Edit `.env` with the provider and API key you want to use. The default provider
-is Gemini.
+is Dify.
 
 ```env
-LLM_PROVIDER=gemini
-GEMINI_API_KEY=...
+LLM_PROVIDER=dify
+DIFY_API_KEY=...
+DIFY_WEBHOOK_URL=...
 ```
 
 Supported `LLM_PROVIDER` values are `gemini`, `deepseek`, and `dify`.
