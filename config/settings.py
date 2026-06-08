@@ -6,6 +6,7 @@ config/settings.py
 
 import os
 from dotenv import load_dotenv
+from config.devops_access import DEVOPS_DENIED_MESSAGE, is_devops_machine
 from config.runtime_paths import app_log_file, env_file, project_root
 
 ENV_FILE = env_file()
@@ -25,6 +26,8 @@ class Settings:
     # 可选值: "dify" (默认), "gemini", "deepseek"
     VALID_LLM_PROVIDERS = ("dify", "gemini", "deepseek")
     LLM_PROVIDER = os.getenv("LLM_PROVIDER", "dify").strip().lower()
+    if LLM_PROVIDER == "gemini" and not is_devops_machine():
+        LLM_PROVIDER = "dify"
 
     # ── Dify 配置 ──────────────────────────────────────────
     DIFY_BASE_URL = os.getenv("DIFY_BASE_URL", "https://api.dify.ai/v1")
@@ -105,6 +108,8 @@ class Settings:
                 f"❌ 未知的 LLM_PROVIDER: {cls.LLM_PROVIDER!r}。"
                 f"请设置为 {', '.join(cls.VALID_LLM_PROVIDERS)}。"
             )
+        if cls.LLM_PROVIDER == "gemini" and not is_devops_machine():
+            raise EnvironmentError(DEVOPS_DENIED_MESSAGE)
 
     @classmethod
     def validate_selected_provider(cls) -> None:
@@ -135,8 +140,11 @@ class Settings:
     def reload(cls) -> None:
         """从 .env / 环境变量重新加载运行时配置。"""
         load_dotenv(dotenv_path=cls.ENV_FILE, override=True)
+        provider = os.getenv("LLM_PROVIDER", cls.LLM_PROVIDER).strip().lower()
+        if provider == "gemini" and not is_devops_machine():
+            provider = "dify"
         cls.update_runtime(
-            provider=os.getenv("LLM_PROVIDER", cls.LLM_PROVIDER).strip().lower(),
+            provider=provider,
             gemini_model=os.getenv("GEMINI_MODEL", cls.GEMINI_MODEL).strip(),
             deepseek_model=os.getenv("DEEPSEEK_MODEL", cls.DEEPSEEK_MODEL).strip(),
         )
@@ -187,7 +195,10 @@ class Settings:
     ) -> None:
         """更新当前进程内非密钥配置。"""
         if provider is not None:
-            cls.LLM_PROVIDER = provider.strip().lower()
+            normalized_provider = provider.strip().lower()
+            if normalized_provider == "gemini" and not is_devops_machine():
+                raise PermissionError(DEVOPS_DENIED_MESSAGE)
+            cls.LLM_PROVIDER = normalized_provider
         if gemini_model is not None and gemini_model.strip():
             cls.GEMINI_MODEL = gemini_model.strip()
         if deepseek_model is not None and deepseek_model.strip():

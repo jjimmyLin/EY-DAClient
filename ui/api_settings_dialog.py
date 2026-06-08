@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from config.devops_access import DEVOPS_DENIED_MESSAGE, is_devops_machine
 from config.runtime_paths import env_file
 from config.settings import settings
 
@@ -44,6 +45,12 @@ class ApiSettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         settings.reload()
+        self._devops_allowed = is_devops_machine()
+        self._available_providers = [
+            item
+            for item in self._PROVIDERS
+            if item[0] != "gemini" or self._devops_allowed
+        ]
         self.setWindowTitle("API Settings")
         self.setModal(True)
         self.setMinimumWidth(540)
@@ -58,18 +65,19 @@ class ApiSettingsDialog(QDialog):
         self._dify_timeout = QLineEdit()
 
         self._gemini_api_key = QLineEdit()
-        self._gemini_model = QComboBox()
+        self._gemini_model_label = QLabel("gemini-3.5-flash")
         self._gemini_base_url = QLineEdit()
         self._gemini_timeout = QLineEdit()
 
         self._deepseek_api_key = QLineEdit()
-        self._deepseek_model = QComboBox()
+        self._deepseek_model_label = QLabel(settings.DEEPSEEK_MODEL)
         self._deepseek_base_url = QLineEdit()
         self._deepseek_timeout = QLineEdit()
 
         self._init_ui()
         self._load_values()
         self._refresh_status()
+        self._apply_style()
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -83,22 +91,32 @@ class ApiSettingsDialog(QDialog):
         header.setWordWrap(True)
         layout.addWidget(header)
 
+        if not self._devops_allowed:
+            notice = QLabel(DEVOPS_DENIED_MESSAGE)
+            notice.setObjectName("devopsDeniedNotice")
+            notice.setWordWrap(True)
+            layout.addWidget(notice)
+
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignLeft)
-        for provider, label in self._PROVIDERS:
+        for provider, label in self._available_providers:
             self._provider_combo.addItem(label, provider)
         self._provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         form.addRow("Active mode", self._provider_combo)
         layout.addLayout(form)
 
-        self._provider_stack.addWidget(self._build_dify_page())
-        self._provider_stack.addWidget(self._build_gemini_page())
-        self._provider_stack.addWidget(self._build_deepseek_page())
+        for provider, _label in self._available_providers:
+            if provider == "dify":
+                self._provider_stack.addWidget(self._build_dify_page())
+            elif provider == "gemini":
+                self._provider_stack.addWidget(self._build_gemini_page())
+            elif provider == "deepseek":
+                self._provider_stack.addWidget(self._build_deepseek_page())
         layout.addWidget(self._provider_stack, stretch=1)
 
         status_group = QGroupBox("Configuration status")
         status_layout = QVBoxLayout(status_group)
-        for provider, label in self._PROVIDERS:
+        for provider, label in self._available_providers:
             title = QLabel(label)
             status = QLabel()
             status.setWordWrap(True)
@@ -136,22 +154,11 @@ class ApiSettingsDialog(QDialog):
         form = QFormLayout(page)
 
         self._gemini_api_key.setEchoMode(QLineEdit.Password)
-        self._gemini_model.setEditable(True)
         self._gemini_base_url.setClearButtonEnabled(True)
         self._gemini_timeout.setMaximumWidth(120)
 
-        for model in self._unique([
-            settings.GEMINI_MODEL,
-            "gemini-3.5-flash",
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-lite",
-        ]):
-            self._gemini_model.addItem(model)
-
         form.addRow("Gemini API key", self._gemini_api_key)
-        form.addRow("Model", self._gemini_model)
+        form.addRow("Model", self._gemini_model_label)
         form.addRow("Base URL", self._gemini_base_url)
         form.addRow("Timeout (sec)", self._gemini_timeout)
 
@@ -165,26 +172,22 @@ class ApiSettingsDialog(QDialog):
         form = QFormLayout(page)
 
         self._deepseek_api_key.setEchoMode(QLineEdit.Password)
-        self._deepseek_model.setEditable(True)
         self._deepseek_base_url.setClearButtonEnabled(True)
         self._deepseek_timeout.setMaximumWidth(120)
 
-        for model in self._unique([
-            settings.DEEPSEEK_MODEL,
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-        ]):
-            self._deepseek_model.addItem(model)
-
         form.addRow("DeepSeek API key", self._deepseek_api_key)
-        form.addRow("Model", self._deepseek_model)
+        form.addRow("Model", self._deepseek_model_label)
         form.addRow("Base URL", self._deepseek_base_url)
         form.addRow("Timeout (sec)", self._deepseek_timeout)
         return page
 
     def _load_values(self) -> None:
-        for idx, (provider, _label) in enumerate(self._PROVIDERS):
-            if provider == settings.LLM_PROVIDER:
+        selected_provider = settings.LLM_PROVIDER
+        if selected_provider == "gemini" and not self._devops_allowed:
+            selected_provider = "dify"
+
+        for idx, (provider, _label) in enumerate(self._available_providers):
+            if provider == selected_provider:
                 self._provider_combo.setCurrentIndex(idx)
                 self._provider_stack.setCurrentIndex(idx)
                 break
@@ -195,12 +198,12 @@ class ApiSettingsDialog(QDialog):
         self._dify_timeout.setText(str(settings.DIFY_TIMEOUT))
 
         self._gemini_api_key.setText(settings.GEMINI_API_KEY)
-        self._gemini_model.setCurrentText(settings.GEMINI_MODEL)
+        self._gemini_model_label.setText("gemini-3.5-flash")
         self._gemini_base_url.setText(settings.GEMINI_BASE_URL)
         self._gemini_timeout.setText(str(settings.GEMINI_TIMEOUT))
 
         self._deepseek_api_key.setText(settings.DEEPSEEK_API_KEY)
-        self._deepseek_model.setCurrentText(settings.DEEPSEEK_MODEL)
+        self._deepseek_model_label.setText(settings.DEEPSEEK_MODEL)
         self._deepseek_base_url.setText(settings.DEEPSEEK_BASE_URL)
         self._deepseek_timeout.setText(str(settings.DEEPSEEK_TIMEOUT))
 
@@ -214,6 +217,8 @@ class ApiSettingsDialog(QDialog):
         }
 
         for provider, values in status.items():
+            if provider not in self._status_labels:
+                continue
             label, required = friendly[provider]
             missing = [key for key, present in values.items() if not present and key in required]
             if missing:
@@ -228,8 +233,12 @@ class ApiSettingsDialog(QDialog):
 
     def _save(self) -> None:
         provider = str(self._provider_combo.currentData())
-        gemini_model = self._gemini_model.currentText().strip()
-        deepseek_model = self._deepseek_model.currentText().strip()
+        if provider == "gemini" and not self._devops_allowed:
+            self._provider_combo.setCurrentIndex(0)
+            self._provider_stack.setCurrentIndex(0)
+            provider = "dify"
+        gemini_model = "gemini-3.5-flash"
+        deepseek_model = settings.DEEPSEEK_MODEL
 
         updates = {
             "LLM_PROVIDER": provider,
@@ -267,3 +276,48 @@ class ApiSettingsDialog(QDialog):
                 seen.add(value)
                 result.append(value)
         return result
+
+    def _apply_style(self) -> None:
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #FFFFFF;
+                font-family: "Segoe UI";
+            }
+            QLabel {
+                color: #3C4043;
+                font-size: 12px;
+            }
+            QLineEdit,
+            QComboBox {
+                border: 1px solid #DADCE0;
+                border-radius: 6px;
+                padding: 6px 8px;
+                min-height: 24px;
+                color: #202124;
+                background-color: #FFFFFF;
+            }
+            QLineEdit:focus,
+            QComboBox:focus {
+                border-color: #1A73E8;
+            }
+            QGroupBox {
+                border: 1px solid #E8EAED;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding: 10px;
+                color: #202124;
+                font-weight: 600;
+            }
+            QPushButton {
+                border-radius: 6px;
+                padding: 6px 12px;
+            }
+            QLabel#devopsDeniedNotice {
+                background-color: #FEF7E0;
+                color: #5F4300;
+                border: 1px solid #F9DE8B;
+                border-radius: 6px;
+                padding: 8px 10px;
+                font-weight: 600;
+            }
+        """)

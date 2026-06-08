@@ -89,8 +89,8 @@ class Preprocessor:
             raise ValueError(f"不支持的文件格式: {path.suffix}")
 
         size_kb = path.stat().st_size / 1024
-        xl = pd.ExcelFile(file_path)
-        sheets = [self._process_sheet(xl, name) for name in xl.sheet_names]
+        with pd.ExcelFile(file_path) as xl:
+            sheets = [self._process_sheet(xl, name) for name in xl.sheet_names]
 
         return FileMeta(
             file_path=str(path.resolve()),

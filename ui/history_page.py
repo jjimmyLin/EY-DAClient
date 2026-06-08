@@ -1,4 +1,4 @@
-# ui/history_page.py
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QWidget,
@@ -10,9 +10,13 @@ from PySide6.QtWidgets import (
     QPushButton,
 )
 
+
 class HistoryPage(QWidget):
+    task_open_requested = Signal(int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("historyPage")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(40, 40, 40, 40)
         
@@ -20,8 +24,8 @@ class HistoryPage(QWidget):
         header_layout = QHBoxLayout()
         self.title = QLabel("Task History")
         self.title.setStyleSheet("font-size: 20px; font-weight: bold; color: #111827;")
-        self.btn_back = QPushButton("← Back to Workspace")
-        self.btn_back.setFixedSize(150, 32)
+        self.btn_back = QPushButton("Back")
+        self.btn_back.setFixedSize(80, 32)
         
         header_layout.addWidget(self.title)
         header_layout.addStretch()
@@ -46,6 +50,9 @@ class HistoryPage(QWidget):
         lists_layout.addLayout(unfin_col)
         lists_layout.addLayout(fin_col)
         layout.addLayout(lists_layout)
+
+        self.unfinished_list.itemDoubleClicked.connect(self._emit_task_open)
+        self.finished_list.itemDoubleClicked.connect(self._emit_task_open)
 
         self.set_tasks([], [])
 
@@ -79,7 +86,13 @@ class HistoryPage(QWidget):
         for task in tasks:
             item = QListWidgetItem(self._format_task(task))
             item.setToolTip(str(task.get("query", "")))
+            item.setData(Qt.UserRole, task.get("id"))
             list_widget.addItem(item)
+
+    def _emit_task_open(self, item: QListWidgetItem) -> None:
+        task_id = item.data(Qt.UserRole)
+        if task_id is not None:
+            self.task_open_requested.emit(int(task_id))
 
     def _format_task(self, task: dict) -> str:
         dataset = task.get("dataset") or "Unknown dataset"
