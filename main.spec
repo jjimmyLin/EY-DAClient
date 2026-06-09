@@ -14,7 +14,6 @@ a = Analysis(
         'dify.workflow',
         'llm',
         'llm.gemini_client',
-        'llm.deepseek_client',
         'matplotlib',
         'matplotlib.backends.backend_agg',
         'matplotlib.pyplot',

@@ -1,11 +1,6 @@
 """
 ui/api_settings_dialog.py
 Global API settings dialog.
-
-Primary goal:
-- keep Dify as the default production path
-- make DevOps/Gemini available, but clearly secondary
-- allow editing the actual connection fields from the UI
 """
 
 from __future__ import annotations
@@ -17,10 +12,8 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -32,14 +25,13 @@ from config.settings import settings
 
 
 class ApiSettingsDialog(QDialog):
-    """Dialog for provider selection and API configuration."""
+    """Dialog for Dify and machine-scoped DevOps configuration."""
 
     settings_saved = Signal()
 
     _PROVIDERS = [
         ("dify", "Dify"),
-        ("gemini", "Gemini DevOps"),
-        ("deepseek", "DeepSeek"),
+        ("gemini", "DevOps"),
     ]
 
     def __init__(self, parent=None):
@@ -60,19 +52,12 @@ class ApiSettingsDialog(QDialog):
         self._status_labels: dict[str, QLabel] = {}
 
         self._dify_api_key = QLineEdit()
-        self._dify_webhook_url = QLineEdit()
         self._dify_base_url = QLineEdit()
         self._dify_timeout = QLineEdit()
 
-        self._gemini_api_key = QLineEdit()
-        self._gemini_model_label = QLabel("gemini-3.5-flash")
-        self._gemini_base_url = QLineEdit()
-        self._gemini_timeout = QLineEdit()
-
-        self._deepseek_api_key = QLineEdit()
-        self._deepseek_model_label = QLabel(settings.DEEPSEEK_MODEL)
-        self._deepseek_base_url = QLineEdit()
-        self._deepseek_timeout = QLineEdit()
+        self._devops_api_key = QLineEdit()
+        self._devops_base_url = QLineEdit()
+        self._devops_timeout = QLineEdit()
 
         self._init_ui()
         self._load_values()
@@ -86,7 +71,7 @@ class ApiSettingsDialog(QDialog):
 
         header = QLabel(
             f"Settings are stored in {env_file()}\n"
-            "Dify is the default product path. Gemini is kept as DevOps mode."
+            "The app uses Dify as the production analysis path."
         )
         header.setWordWrap(True)
         layout.addWidget(header)
@@ -109,9 +94,7 @@ class ApiSettingsDialog(QDialog):
             if provider == "dify":
                 self._provider_stack.addWidget(self._build_dify_page())
             elif provider == "gemini":
-                self._provider_stack.addWidget(self._build_gemini_page())
-            elif provider == "deepseek":
-                self._provider_stack.addWidget(self._build_deepseek_page())
+                self._provider_stack.addWidget(self._build_devops_page())
         layout.addWidget(self._provider_stack, stretch=1)
 
         status_group = QGroupBox("Configuration status")
@@ -135,50 +118,35 @@ class ApiSettingsDialog(QDialog):
         form = QFormLayout(page)
 
         self._dify_api_key.setEchoMode(QLineEdit.Password)
-        self._dify_webhook_url.setClearButtonEnabled(True)
         self._dify_base_url.setClearButtonEnabled(True)
         self._dify_timeout.setMaximumWidth(120)
 
         form.addRow("Dify API key", self._dify_api_key)
-        form.addRow("Webhook URL", self._dify_webhook_url)
         form.addRow("Base URL", self._dify_base_url)
         form.addRow("Timeout (sec)", self._dify_timeout)
 
-        note = QLabel("This is the primary workflow. The app sends dataset metadata and your query to Dify.")
+        note = QLabel(
+            "The app calls Base URL + /workflows/run automatically."
+        )
         note.setWordWrap(True)
         form.addRow(note)
         return page
 
-    def _build_gemini_page(self) -> QWidget:
+    def _build_devops_page(self) -> QWidget:
         page = QWidget()
         form = QFormLayout(page)
 
-        self._gemini_api_key.setEchoMode(QLineEdit.Password)
-        self._gemini_base_url.setClearButtonEnabled(True)
-        self._gemini_timeout.setMaximumWidth(120)
+        self._devops_api_key.setEchoMode(QLineEdit.Password)
+        self._devops_base_url.setClearButtonEnabled(True)
+        self._devops_timeout.setMaximumWidth(120)
 
-        form.addRow("Gemini API key", self._gemini_api_key)
-        form.addRow("Model", self._gemini_model_label)
-        form.addRow("Base URL", self._gemini_base_url)
-        form.addRow("Timeout (sec)", self._gemini_timeout)
+        form.addRow("DevOps API key", self._devops_api_key)
+        form.addRow("Base URL", self._devops_base_url)
+        form.addRow("Timeout (sec)", self._devops_timeout)
 
-        note = QLabel("Use this only for DevOps/debugging the API flow.")
+        note = QLabel("Use this only for approved local debugging.")
         note.setWordWrap(True)
         form.addRow(note)
-        return page
-
-    def _build_deepseek_page(self) -> QWidget:
-        page = QWidget()
-        form = QFormLayout(page)
-
-        self._deepseek_api_key.setEchoMode(QLineEdit.Password)
-        self._deepseek_base_url.setClearButtonEnabled(True)
-        self._deepseek_timeout.setMaximumWidth(120)
-
-        form.addRow("DeepSeek API key", self._deepseek_api_key)
-        form.addRow("Model", self._deepseek_model_label)
-        form.addRow("Base URL", self._deepseek_base_url)
-        form.addRow("Timeout (sec)", self._deepseek_timeout)
         return page
 
     def _load_values(self) -> None:
@@ -193,34 +161,29 @@ class ApiSettingsDialog(QDialog):
                 break
 
         self._dify_api_key.setText(settings.DIFY_API_KEY)
-        self._dify_webhook_url.setText(settings.DIFY_WEBHOOK_URL)
         self._dify_base_url.setText(settings.DIFY_BASE_URL)
         self._dify_timeout.setText(str(settings.DIFY_TIMEOUT))
 
-        self._gemini_api_key.setText(settings.GEMINI_API_KEY)
-        self._gemini_model_label.setText("gemini-3.5-flash")
-        self._gemini_base_url.setText(settings.GEMINI_BASE_URL)
-        self._gemini_timeout.setText(str(settings.GEMINI_TIMEOUT))
-
-        self._deepseek_api_key.setText(settings.DEEPSEEK_API_KEY)
-        self._deepseek_model_label.setText(settings.DEEPSEEK_MODEL)
-        self._deepseek_base_url.setText(settings.DEEPSEEK_BASE_URL)
-        self._deepseek_timeout.setText(str(settings.DEEPSEEK_TIMEOUT))
+        self._devops_api_key.setText(settings.GEMINI_API_KEY)
+        self._devops_base_url.setText(settings.GEMINI_BASE_URL)
+        self._devops_timeout.setText(str(settings.GEMINI_TIMEOUT))
 
     def _refresh_status(self) -> None:
         settings.reload()
         status = settings.provider_status()
         friendly = {
-            "dify": ("Dify primary mode", ("DIFY_API_KEY", "DIFY_WEBHOOK_URL")),
-            "gemini": ("Gemini DevOps mode", ("GEMINI_API_KEY",)),
-            "deepseek": ("DeepSeek mode", ("DEEPSEEK_API_KEY",)),
+            "dify": ("Dify", ("DIFY_API_KEY", "DIFY_BASE_URL")),
+            "gemini": ("DevOps", ("GEMINI_API_KEY",)),
         }
 
         for provider, values in status.items():
             if provider not in self._status_labels:
                 continue
             label, required = friendly[provider]
-            missing = [key for key, present in values.items() if not present and key in required]
+            missing = [
+                key for key, present in values.items()
+                if not present and key in required
+            ]
             if missing:
                 self._status_labels[provider].setText(
                     "Missing: " + ", ".join(missing)
@@ -237,23 +200,16 @@ class ApiSettingsDialog(QDialog):
             self._provider_combo.setCurrentIndex(0)
             self._provider_stack.setCurrentIndex(0)
             provider = "dify"
-        gemini_model = "gemini-3.5-flash"
-        deepseek_model = settings.DEEPSEEK_MODEL
 
         updates = {
             "LLM_PROVIDER": provider,
             "DIFY_API_KEY": self._dify_api_key.text().strip(),
-            "DIFY_WEBHOOK_URL": self._dify_webhook_url.text().strip(),
             "DIFY_BASE_URL": self._dify_base_url.text().strip(),
             "DIFY_TIMEOUT": self._dify_timeout.text().strip(),
-            "GEMINI_API_KEY": self._gemini_api_key.text().strip(),
-            "GEMINI_MODEL": gemini_model,
-            "GEMINI_BASE_URL": self._gemini_base_url.text().strip(),
-            "GEMINI_TIMEOUT": self._gemini_timeout.text().strip(),
-            "DEEPSEEK_API_KEY": self._deepseek_api_key.text().strip(),
-            "DEEPSEEK_MODEL": deepseek_model,
-            "DEEPSEEK_BASE_URL": self._deepseek_base_url.text().strip(),
-            "DEEPSEEK_TIMEOUT": self._deepseek_timeout.text().strip(),
+            "GEMINI_API_KEY": self._devops_api_key.text().strip(),
+            "GEMINI_MODEL": "gemini-3.5-flash",
+            "GEMINI_BASE_URL": self._devops_base_url.text().strip(),
+            "GEMINI_TIMEOUT": self._devops_timeout.text().strip(),
         }
         updates = {key: value for key, value in updates.items() if value != ""}
         settings.write_non_secret_env(updates)
@@ -261,21 +217,10 @@ class ApiSettingsDialog(QDialog):
         settings.reload()
         settings.update_runtime(
             provider=provider,
-            gemini_model=gemini_model,
-            deepseek_model=deepseek_model,
+            gemini_model="gemini-3.5-flash",
         )
         self.settings_saved.emit()
         self.accept()
-
-    @staticmethod
-    def _unique(values: list[str]) -> list[str]:
-        seen: set[str] = set()
-        result: list[str] = []
-        for value in values:
-            if value and value not in seen:
-                seen.add(value)
-                result.append(value)
-        return result
 
     def _apply_style(self) -> None:
         self.setStyleSheet("""

@@ -1,5 +1,5 @@
 """
-llm 模块 - LLM 提供商集成（Dify / Gemini / DeepSeek 共用）
+llm 模块 - LLM 提供商集成（Dify / DevOps 共用）
 """
 
 
@@ -33,11 +33,6 @@ def get_client():
         from dify.client import DifyClient
 
         return DifyClient()
-
-    if provider == "deepseek":
-        from llm.deepseek_client import DeepSeekClient
-
-        return DeepSeekClient()
 
     raise LLMError(f"未知的 LLM_PROVIDER: {provider!r}")
 

@@ -23,16 +23,18 @@ class Settings:
     ENV_FILE = ENV_FILE
 
     # ── LLM 提供商选择 ─────────────────────────────────────
-    # 可选值: "dify" (默认), "gemini", "deepseek"
-    VALID_LLM_PROVIDERS = ("dify", "gemini", "deepseek")
+    # 可选值: "dify" (默认), "gemini"
+    VALID_LLM_PROVIDERS = ("dify", "gemini")
     LLM_PROVIDER = os.getenv("LLM_PROVIDER", "dify").strip().lower()
     if LLM_PROVIDER == "gemini" and not is_devops_machine():
         LLM_PROVIDER = "dify"
 
     # ── Dify 配置 ──────────────────────────────────────────
-    DIFY_BASE_URL = os.getenv("DIFY_BASE_URL", "https://api.dify.ai/v1")
+    DIFY_BASE_URL = os.getenv(
+        "DIFY_BASE_URL",
+        "https://ai-platform-uat.ey.net/v1",
+    )
     DIFY_API_KEY = os.getenv("DIFY_API_KEY", "")
-    DIFY_WEBHOOK_URL = os.getenv("DIFY_WEBHOOK_URL", "")
     DIFY_TIMEOUT = int(os.getenv("DIFY_TIMEOUT", "60"))
 
     # ── Gemini (Google AI Studio) 配置 ─────────────────────
@@ -55,34 +57,6 @@ class Settings:
     GEMINI_THINKING_MODELS = ("gemini-2.5-",)
     GEMINI_THINKING_LEVEL = os.getenv("GEMINI_THINKING_LEVEL", "").strip().lower()
 
-    # ── DeepSeek 配置 ──────────────────────────────────────
-    DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-    DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
-    DEEPSEEK_BASE_URL = os.getenv(
-        "DEEPSEEK_BASE_URL",
-        "https://api.deepseek.com",
-    )
-    DEEPSEEK_TIMEOUT = int(os.getenv("DEEPSEEK_TIMEOUT", "120"))
-    DEEPSEEK_THINKING_ENABLED = (
-        os.getenv("DEEPSEEK_THINKING_ENABLED", "true").strip().lower()
-        in ("1", "true", "yes", "on")
-    )
-    DEEPSEEK_REASONING_EFFORT = os.getenv(
-        "DEEPSEEK_REASONING_EFFORT", "high"
-    ).strip().lower()
-    DEEPSEEK_STREAM = (
-        os.getenv("DEEPSEEK_STREAM", "true").strip().lower()
-        in ("1", "true", "yes", "on")
-    )
-    DEEPSEEK_MODEL_FALLBACKS = [
-        m.strip()
-        for m in os.getenv(
-            "DEEPSEEK_MODEL_FALLBACKS",
-            "deepseek-v4-flash,deepseek-v4-pro",
-        ).split(",")
-        if m.strip()
-    ]
-    
     # ── 代码执行沙箱配置 ───────────────────────────────────
     EXEC_TIMEOUT_SEC = int(os.getenv("EXEC_TIMEOUT_SEC", "30"))
     EXEC_MAX_MEM_MB = int(os.getenv("EXEC_MAX_MEM_MB", "512"))
@@ -126,14 +100,9 @@ class Settings:
                 raise EnvironmentError(
                     "❌ DIFY_API_KEY 未设置。请检查 .env 文件。"
                 )
-            if not cls.DIFY_WEBHOOK_URL:
+            if not cls.DIFY_BASE_URL:
                 raise EnvironmentError(
-                    "❌ DIFY_WEBHOOK_URL 未设置。请检查 .env 文件。"
-                )
-        elif cls.LLM_PROVIDER == "deepseek":
-            if not cls.DEEPSEEK_API_KEY:
-                raise EnvironmentError(
-                    "❌ DEEPSEEK_API_KEY 未设置。请检查 .env 文件。"
+                    "❌ DIFY_BASE_URL 未设置。请检查 .env 文件。"
                 )
 
     @classmethod
@@ -146,11 +115,9 @@ class Settings:
         cls.update_runtime(
             provider=provider,
             gemini_model=os.getenv("GEMINI_MODEL", cls.GEMINI_MODEL).strip(),
-            deepseek_model=os.getenv("DEEPSEEK_MODEL", cls.DEEPSEEK_MODEL).strip(),
         )
         cls.DIFY_BASE_URL = os.getenv("DIFY_BASE_URL", cls.DIFY_BASE_URL)
         cls.DIFY_API_KEY = os.getenv("DIFY_API_KEY", "")
-        cls.DIFY_WEBHOOK_URL = os.getenv("DIFY_WEBHOOK_URL", "")
         cls.DIFY_TIMEOUT = int(os.getenv("DIFY_TIMEOUT", str(cls.DIFY_TIMEOUT)))
         cls.GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
         cls.GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", cls.GEMINI_BASE_URL)
@@ -167,31 +134,12 @@ class Settings:
                 ",".join(cls.GEMINI_MODEL_FALLBACKS),
             )
         )
-        cls.DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-        cls.DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", cls.DEEPSEEK_BASE_URL)
-        cls.DEEPSEEK_TIMEOUT = int(
-            os.getenv("DEEPSEEK_TIMEOUT", str(cls.DEEPSEEK_TIMEOUT))
-        )
-        cls.DEEPSEEK_THINKING_ENABLED = cls._env_bool(
-            "DEEPSEEK_THINKING_ENABLED", cls.DEEPSEEK_THINKING_ENABLED
-        )
-        cls.DEEPSEEK_REASONING_EFFORT = os.getenv(
-            "DEEPSEEK_REASONING_EFFORT", cls.DEEPSEEK_REASONING_EFFORT
-        ).strip().lower()
-        cls.DEEPSEEK_STREAM = cls._env_bool("DEEPSEEK_STREAM", cls.DEEPSEEK_STREAM)
-        cls.DEEPSEEK_MODEL_FALLBACKS = cls._csv(
-            os.getenv(
-                "DEEPSEEK_MODEL_FALLBACKS",
-                ",".join(cls.DEEPSEEK_MODEL_FALLBACKS),
-            )
-        )
 
     @classmethod
     def update_runtime(
         cls,
         provider: str | None = None,
         gemini_model: str | None = None,
-        deepseek_model: str | None = None,
     ) -> None:
         """更新当前进程内非密钥配置。"""
         if provider is not None:
@@ -201,8 +149,6 @@ class Settings:
             cls.LLM_PROVIDER = normalized_provider
         if gemini_model is not None and gemini_model.strip():
             cls.GEMINI_MODEL = gemini_model.strip()
-        if deepseek_model is not None and deepseek_model.strip():
-            cls.DEEPSEEK_MODEL = deepseek_model.strip()
         cls.validate_provider_name()
 
     @classmethod
@@ -211,10 +157,9 @@ class Settings:
         return {
             "dify": {
                 "DIFY_API_KEY": bool(cls.DIFY_API_KEY),
-                "DIFY_WEBHOOK_URL": bool(cls.DIFY_WEBHOOK_URL),
+                "DIFY_BASE_URL": bool(cls.DIFY_BASE_URL),
             },
             "gemini": {"GEMINI_API_KEY": bool(cls.GEMINI_API_KEY)},
-            "deepseek": {"DEEPSEEK_API_KEY": bool(cls.DEEPSEEK_API_KEY)},
         }
 
     @staticmethod
@@ -241,17 +186,8 @@ class Settings:
             "GEMINI_THINKING_LEVEL",
             "GEMINI_MODEL_FALLBACKS",
             "DIFY_API_KEY",
-            "DIFY_WEBHOOK_URL",
             "DIFY_BASE_URL",
             "DIFY_TIMEOUT",
-            "DEEPSEEK_MODEL",
-            "DEEPSEEK_API_KEY",
-            "DEEPSEEK_BASE_URL",
-            "DEEPSEEK_TIMEOUT",
-            "DEEPSEEK_THINKING_ENABLED",
-            "DEEPSEEK_REASONING_EFFORT",
-            "DEEPSEEK_STREAM",
-            "DEEPSEEK_MODEL_FALLBACKS",
         }
         invalid = set(updates) - allowed
         if invalid:

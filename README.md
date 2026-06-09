@@ -9,8 +9,7 @@ isolated worker process.
 
 - Spreadsheet preprocessing with sheet metadata and sample values.
 - Dify-first analysis workflow with an editable code review screen.
-- DevOps mode switch for Gemini, with Dify as the default product path.
-- Multi-provider LLM configuration for Dify, Gemini, and DeepSeek.
+- Machine-gated DevOps mode for approved local debugging, with Dify as the default path.
 - Worker-mode execution for PyInstaller builds so generated code can run without
   opening another GUI instance.
 - File-backed app and crash logging for packaged Windows builds.
@@ -33,10 +32,11 @@ is Dify.
 ```env
 LLM_PROVIDER=dify
 DIFY_API_KEY=...
-DIFY_WEBHOOK_URL=...
+DIFY_BASE_URL=https://ai-platform-uat.ey.net/v1
 ```
 
-Supported `LLM_PROVIDER` values are `gemini`, `deepseek`, and `dify`.
+Supported `LLM_PROVIDER` values are `dify` and `gemini` (`gemini` is the
+machine-restricted DevOps mode).
 
 ## Run
 

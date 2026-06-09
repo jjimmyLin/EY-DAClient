@@ -42,6 +42,19 @@ class AnalysisWorker(QObject):
                     self._user_query,
                     event_callback=self.event.emit,
                 )
+            elif self._mode == "overview":
+                if not self._files_meta:
+                    result = WorkflowResult(
+                        success=False,
+                        code="",
+                        execution=None,
+                        error="No dataset available for overview",
+                    )
+                else:
+                    result = workflow.overview_only(
+                        self._files_meta[0],
+                        event_callback=self.event.emit,
+                    )
             elif self._mode == "execute":
                 result = workflow.execute_only(
                     self._code,

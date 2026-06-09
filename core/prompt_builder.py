@@ -122,6 +122,37 @@ class PromptBuilder:
         }
 
     @staticmethod
+    def build_dataset_overview_prompt(file_meta: FileMeta) -> dict:
+        context = PromptBuilder._build_context([file_meta])
+        return {
+            "task_type": "dataset_overview",
+            "system": (
+                "You are a senior data analyst. "
+                "Given spreadsheet metadata only, produce a compact dataset overview. "
+                "Respond with one valid JSON object only. "
+                "Do not use markdown fences."
+            ),
+            "context": context,
+            "query": (
+                "Review the uploaded dataset and return JSON with exactly these keys:\n"
+                "{\n"
+                '  "dataset_kind": string,\n'
+                '  "topic": string,\n'
+                '  "summary": string,\n'
+                '  "rows": integer,\n'
+                '  "columns": integer,\n'
+                '  "sheet_count": integer,\n'
+                '  "suggestions": [string, string, string, string]\n'
+                "}\n"
+                "Keep the tone concise and practical. "
+                "dataset_kind should say what kind of dataset this is. "
+                "topic should say what the dataset seems to be about. "
+                "summary should be a short executive overview. "
+                "suggestions should be concrete analysis questions a user can ask next."
+            ),
+        }
+
+    @staticmethod
     def build_code_verification_prompt(
         user_query: str,
         confirmed_intent: dict,

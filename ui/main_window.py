@@ -1,7 +1,7 @@
 import sys
 from datetime import datetime
-from PySide6.QtCore import Qt, QPoint, QThread
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtCore import Qt, QPoint, QRect, QSize, QThread, QTimer, QEvent
+from PySide6.QtGui import QColor, QCursor, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
@@ -17,11 +17,14 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QTabWidget,
-    QFileDialog
+    QFileDialog,
+    QGraphicsDropShadowEffect,
 )
 from ui.history_page import HistoryPage
 from ui.decision_panel import DecisionPanel, OptionItem, DECISION_PANEL_STYLE
 from ui.api_settings_dialog import ApiSettingsDialog
+from ui.floating_controls import DatasetRowWidget, SuggestionPopover
+from ui.overview_popover import OverviewPopover
 from config.settings import settings
 from workers.analysis_worker import AnalysisWorker
 
@@ -169,12 +172,22 @@ class MainWindow(QMainWindow):
         self._pending_query = None
         self._analysis_thread = None
         self._analysis_worker = None
+        self._overview_thread = None
+        self._overview_worker = None
         self._active_worker_mode = ""
         self._transcript = {}
         self._task_history = []
         self._active_task_id = None
         self._generated_code = ""
         self._task_open = False
+        self._dataset_overviews = {}
+        self._dataset_row_widgets = {}
+        self._overview_loading_dataset = None
+        self._suggestion_buttons = []
+        self._suggestion_hide_timer = QTimer(self)
+        self._suggestion_hide_timer.setSingleShot(True)
+        self._suggestion_hide_timer.setInterval(160)
+        self._suggestion_hide_timer.timeout.connect(self._maybe_hide_suggestion_popover)
 
         self._init_ui()
 
@@ -316,7 +329,8 @@ class MainWindow(QMainWindow):
 
         canvas_container = QWidget()
         canvas_layout = QVBoxLayout(canvas_container)
-        canvas_layout.setContentsMargins(40, 40, 40, 20)
+        canvas_layout.setContentsMargins(40, 28, 40, 20)
+        canvas_layout.setSpacing(14)
 
         self.result_output = QTextEdit()
         self.result_output.setObjectName("resultOutput")
@@ -357,7 +371,7 @@ class MainWindow(QMainWindow):
         self.analysis_tabs = QTabWidget()
         self.analysis_tabs.setObjectName("analysisTabs")
         self.analysis_tabs.addTab(self.result_output, "Result")
-        self.analysis_tabs.addTab(code_panel, "Python")
+        self.python_tab_index = self.analysis_tabs.addTab(code_panel, "Python")
 
         self.decision_panel = DecisionPanel()
         self.decision_panel.decision_made.connect(self._on_decision_made)
@@ -375,10 +389,33 @@ class MainWindow(QMainWindow):
 
         command_bar = QFrame()
         command_bar.setObjectName("commandBar")
+        command_shadow = QGraphicsDropShadowEffect(self)
+        command_shadow.setBlurRadius(28)
+        command_shadow.setOffset(0, 8)
+        command_shadow.setColor(QColor(15, 23, 42, 30))
+        command_bar.setGraphicsEffect(command_shadow)
 
         command_layout = QHBoxLayout(command_bar)
         command_layout.setContentsMargins(16, 12, 16, 12)
         command_layout.setSpacing(12)
+
+        command_stack = QVBoxLayout()
+        command_stack.setContentsMargins(0, 0, 0, 0)
+        command_stack.setSpacing(10)
+
+        suggestion_bar = QHBoxLayout()
+        suggestion_bar.setContentsMargins(0, 0, 0, 0)
+        suggestion_bar.setSpacing(8)
+
+        self.suggestion_btn = QPushButton("Suggestions")
+        self.suggestion_btn.setObjectName("suggestionTriggerBtn")
+        self.suggestion_btn.setCursor(Qt.PointingHandCursor)
+        self.suggestion_btn.setFlat(True)
+        self.suggestion_btn.setMinimumHeight(24)
+        self.suggestion_btn.setMinimumWidth(0)
+        self.suggestion_btn.installEventFilter(self)
+        suggestion_bar.addWidget(self.suggestion_btn)
+        suggestion_bar.addStretch()
 
         self.prompt_input = QTextEdit()
         self.prompt_input.setObjectName("promptInput")
@@ -386,6 +423,13 @@ class MainWindow(QMainWindow):
             "Ask a question about your data or request an analysis..."
         )
         self.prompt_input.setMaximumHeight(80)
+        command_stack.addLayout(suggestion_bar)
+        command_stack.addWidget(self.prompt_input)
+
+        self.suggestion_popover = SuggestionPopover(self)
+        self.suggestion_popover.suggestion_selected.connect(self._apply_suggestion)
+        self.suggestion_popover.installEventFilter(self)
+        self.overview_popover = OverviewPopover(self)
 
         self.run_btn = QPushButton("Analyze")
         self.run_btn.setObjectName("runBtn")
@@ -400,7 +444,7 @@ class MainWindow(QMainWindow):
         self.apply_btn.clicked.connect(self._on_apply_clicked)
         self.apply_btn.setVisible(False)
 
-        command_layout.addWidget(self.prompt_input)
+        command_layout.addLayout(command_stack, stretch=1)
         command_layout.addWidget(self.run_btn)
         command_layout.addWidget(self.apply_btn)
 
@@ -432,9 +476,11 @@ class MainWindow(QMainWindow):
         self.history_page.btn_back.clicked.connect(lambda: self.page_container.setCurrentIndex(0))
         self.history_page.task_open_requested.connect(self._open_history_task)
         self.settings_btn.clicked.connect(self._on_settings_clicked)
+        self.dataset_list.currentItemChanged.connect(self._on_dataset_selection_changed)
 
         self._apply_style()
         self._refresh_api_status()
+        self._refresh_overview_ui()
         self._show_start_page()
 
     def _on_upload_clicked(self):
@@ -470,8 +516,9 @@ class MainWindow(QMainWindow):
                 file_name = self._dataset_display_name(file_path)
 
                 self.loaded_files[file_name] = file_meta
-                self.dataset_list.addItem(file_name)
+                self._add_dataset_item(file_name)
                 last_loaded_row = self.dataset_list.count() - 1
+                self._ensure_dataset_overview(file_name, force=False)
                 self.log_output.append(f"✓ Loaded: {file_name}")
             except Exception as e:
                 self.log_output.append(f"✗ Error loading {file_path}: {str(e)}")
@@ -480,6 +527,318 @@ class MainWindow(QMainWindow):
             self.dataset_list.setCurrentRow(last_loaded_row)
             selected_name = self.dataset_list.item(last_loaded_row).text()
             self.log_output.append(f"Selected dataset: {selected_name}")
+            self._ensure_dataset_overview(selected_name, force=False)
+
+    def _on_dataset_selection_changed(self, current, previous) -> None:
+        del previous
+        current_name = current.text() if current else None
+        self._sync_dataset_row_selection(current_name)
+        self._refresh_overview_ui(current_name)
+        if current_name:
+            self._ensure_dataset_overview(current_name, force=False)
+
+    def eventFilter(self, watched, event):
+        if watched is self.suggestion_btn:
+            if event.type() == QEvent.Enter:
+                self._show_suggestion_popover()
+            elif event.type() == QEvent.Leave:
+                self._schedule_suggestion_popover_hide()
+        elif watched is self.suggestion_popover:
+            if event.type() == QEvent.Enter:
+                self._cancel_suggestion_popover_hide()
+            elif event.type() == QEvent.Leave:
+                self._schedule_suggestion_popover_hide()
+        return super().eventFilter(watched, event)
+
+    def _current_dataset_name(self) -> str | None:
+        item = self.dataset_list.currentItem()
+        return item.text() if item else None
+
+    def _current_file_meta(self):
+        dataset_name = self._current_dataset_name()
+        if not dataset_name:
+            return None
+        return self.loaded_files.get(dataset_name)
+
+    def _add_dataset_item(self, dataset_name: str) -> None:
+        from PySide6.QtWidgets import QListWidgetItem
+
+        item = QListWidgetItem()
+        item.setText(dataset_name)
+        item.setSizeHint(QSize(0, 44))
+        self.dataset_list.addItem(item)
+
+        row_widget = DatasetRowWidget(dataset_name, self.dataset_list)
+        row_widget.activated.connect(self._select_dataset_by_name)
+        row_widget.overview_requested.connect(self._show_overview_for_dataset)
+        self.dataset_list.setItemWidget(item, row_widget)
+        self._dataset_row_widgets[dataset_name] = row_widget
+        self._sync_dataset_row_selection(self._current_dataset_name())
+
+    def _select_dataset_by_name(self, dataset_name: str) -> None:
+        item = self._find_dataset_item(dataset_name)
+        if item is not None:
+            self.dataset_list.setCurrentItem(item)
+
+    def _sync_dataset_row_selection(self, selected_name: str | None) -> None:
+        for dataset_name, row_widget in self._dataset_row_widgets.items():
+            row_widget.setSelected(dataset_name == selected_name)
+
+    def _show_overview_for_dataset(self, dataset_name: str) -> None:
+        row_widget = self._dataset_row_widgets.get(dataset_name)
+        cached = self._dataset_overviews.get(dataset_name) or {}
+        if (
+            row_widget is not None
+            and self.overview_popover.isVisible()
+            and self._current_dataset_name() == dataset_name
+            and cached.get("state") == "ready"
+            and cached.get("data")
+        ):
+            self.overview_popover.hide()
+            return
+
+        item = self._find_dataset_item(dataset_name)
+        if item is not None:
+            self.dataset_list.setCurrentItem(item)
+        self._show_overview_popover(dataset_name)
+
+    def _find_dataset_item(self, dataset_name: str):
+        for index in range(self.dataset_list.count()):
+            item = self.dataset_list.item(index)
+            if item and item.text() == dataset_name:
+                return item
+        return None
+
+    def _ensure_dataset_overview(self, dataset_name: str, force: bool) -> None:
+        file_meta = self.loaded_files.get(dataset_name)
+        if file_meta is None:
+            return
+
+        cached = self._dataset_overviews.get(dataset_name)
+        if (
+            not force
+            and cached
+            and cached.get("state") in {"loading", "queued", "ready"}
+        ):
+            self._refresh_overview_ui(dataset_name)
+            return
+
+        if self._overview_thread is not None:
+            if self._overview_loading_dataset == dataset_name:
+                return
+            self._dataset_overviews[dataset_name] = {"state": "queued"}
+            self._refresh_overview_ui(dataset_name)
+            return
+
+        self._dataset_overviews[dataset_name] = {"state": "loading"}
+        self._overview_loading_dataset = dataset_name
+        self._refresh_overview_ui(dataset_name)
+        self._start_overview_worker(dataset_name, file_meta)
+
+    def _show_overview_popover(self, dataset_name: str) -> None:
+        cached = self._dataset_overviews.get(dataset_name) or {}
+        state = cached.get("state")
+        if state == "ready" and cached.get("data"):
+            row_widget = self._dataset_row_widgets.get(dataset_name)
+            if row_widget is not None:
+                self.overview_popover.setOverview(cached["data"])
+                self.overview_popover.showFor(row_widget.overview_button, self)
+            return
+
+        if state != "loading":
+            self._ensure_dataset_overview(dataset_name, force=True)
+
+    def _start_overview_worker(self, dataset_name: str, file_meta) -> None:
+        thread = QThread(self)
+        worker = AnalysisWorker(
+            mode="overview",
+            files_meta=[file_meta],
+        )
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.event.connect(self._on_overview_event)
+        worker.finished.connect(self._on_overview_finished)
+        worker.error.connect(self._on_overview_error)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.error.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_overview_worker)
+
+        self._overview_thread = thread
+        self._overview_worker = worker
+        self._overview_loading_dataset = dataset_name
+        thread.start()
+
+    def _on_overview_event(self, event: dict) -> None:
+        message = str(event.get("message", ""))
+        if message and event.get("type") == "status":
+            self.log_output.append(message)
+
+    def _on_overview_finished(self, result) -> None:
+        dataset_name = self._overview_loading_dataset
+        if dataset_name is not None:
+            data = result.overview_result or {}
+            self._dataset_overviews[dataset_name] = {
+                "state": "ready",
+                "data": data,
+                "error": result.error,
+            }
+            if result.error:
+                self.log_output.append(f"Overview fallback used: {result.error}")
+        self._refresh_overview_ui(dataset_name)
+
+    def _on_overview_error(self, error: str) -> None:
+        dataset_name = self._overview_loading_dataset
+        if dataset_name is not None:
+            file_meta = self.loaded_files.get(dataset_name)
+            fallback = {}
+            if file_meta is not None:
+                from dify.workflow import AnalysisWorkflow
+
+                fallback = AnalysisWorkflow._fallback_overview(file_meta)
+            self._dataset_overviews[dataset_name] = {
+                "state": "ready" if fallback else "error",
+                "data": fallback,
+                "error": error,
+            }
+        self.log_output.append(f"Overview detail: {error}")
+        self._refresh_overview_ui(dataset_name)
+
+    def _cleanup_overview_worker(self) -> None:
+        self._overview_thread = None
+        self._overview_worker = None
+        self._overview_loading_dataset = None
+        self._refresh_overview_ui()
+        for queued_name, queued_state in self._dataset_overviews.items():
+            if (queued_state or {}).get("state") == "queued":
+                self._ensure_dataset_overview(queued_name, force=True)
+                break
+
+    def _refresh_overview_ui(self, dataset_name: str | None = None) -> None:
+        active_dataset = self._current_dataset_name()
+        has_dataset = bool(active_dataset)
+        self.suggestion_btn.setVisible(has_dataset)
+
+        if not has_dataset:
+            self.overview_popover.hide()
+            self._set_suggestion_options([])
+            return
+
+        active_ready = False
+        for row_name, row_widget in self._dataset_row_widgets.items():
+            cached = self._dataset_overviews.get(row_name) or {}
+            state = cached.get("state")
+            data = cached.get("data") or {}
+
+            if state == "loading":
+                row_widget.setBusy(True)
+                row_widget.overview_button.setToolTip("Preparing dataset overview")
+                continue
+
+            if state == "queued":
+                row_widget.setQueued("Another overview is finishing first")
+                continue
+
+            if state == "ready" and data:
+                row_widget.overview_button.setVisible(True)
+                row_widget.setReady(data.get("summary") or "Dataset overview is ready")
+                if row_name == active_dataset:
+                    active_ready = True
+                continue
+
+            if state == "error":
+                row_widget.overview_button.setBusy(False)
+                row_widget.overview_button.setVisible(False)
+                continue
+
+            row_widget.overview_button.setBusy(False)
+            row_widget.overview_button.setVisible(False)
+            row_widget.setReady("Generate a quick overview for this dataset")
+
+        active_cached = self._dataset_overviews.get(active_dataset) or {}
+        active_state = active_cached.get("state")
+        active_data = active_cached.get("data") or {}
+        if active_state == "ready" and active_data:
+            suggestions = active_data.get("suggestions") or self._build_default_suggestions(active_dataset)
+            self._set_suggestion_options(suggestions)
+        else:
+            self._set_suggestion_options([])
+            if active_ready:
+                self._set_suggestion_options(active_data.get("suggestions") or self._build_default_suggestions(active_dataset))
+
+    def _set_suggestion_options(self, suggestions: list[str]) -> None:
+        self._suggestion_buttons = suggestions[:4]
+        self.suggestion_btn.setVisible(bool(self._suggestion_buttons))
+        self.suggestion_btn.setEnabled(bool(self._suggestion_buttons))
+        self.suggestion_btn.setToolTip(
+            "Suggested analysis prompts" if self._suggestion_buttons else ""
+        )
+        self.suggestion_popover.setSuggestions(self._suggestion_buttons)
+
+    def _apply_suggestion(self, suggestion: str) -> None:
+        self.prompt_input.setPlainText(suggestion)
+        self.prompt_input.setFocus()
+        self._hide_suggestion_popover()
+
+    def _show_suggestion_popover(self) -> None:
+        if not self._suggestion_buttons or not self.suggestion_btn.isVisible():
+            return
+        self._cancel_suggestion_popover_hide()
+        self.suggestion_popover.showFor(self.suggestion_btn)
+
+    def _schedule_suggestion_popover_hide(self) -> None:
+        if self.suggestion_popover.isVisible():
+            self._suggestion_hide_timer.start()
+
+    def _cancel_suggestion_popover_hide(self) -> None:
+        self._suggestion_hide_timer.stop()
+        self.suggestion_popover.cancelHide()
+
+    def _hide_suggestion_popover(self) -> None:
+        self._suggestion_hide_timer.stop()
+        self.suggestion_popover.hide()
+
+    def _maybe_hide_suggestion_popover(self) -> None:
+        cursor_pos = QCursor.pos()
+        anchor_rect = QRect(
+            self.suggestion_btn.mapToGlobal(QPoint(0, 0)),
+            self.suggestion_btn.size(),
+        )
+        popover_rect = self.suggestion_popover.frameGeometry()
+        if anchor_rect.contains(cursor_pos) or popover_rect.contains(cursor_pos):
+            self._schedule_suggestion_popover_hide()
+            return
+        self._hide_suggestion_popover()
+
+    def _build_default_suggestions(self, dataset_name: str | None) -> list[str]:
+        if not dataset_name:
+            return []
+        file_meta = self.loaded_files.get(dataset_name)
+        if file_meta is None or not file_meta.sheets:
+            return []
+
+        first_sheet = file_meta.sheets[0]
+        numeric_cols = [
+            name for name, dtype in first_sheet.dtypes.items()
+            if dtype.startswith(("int", "float"))
+        ]
+        text_cols = [
+            name for name, dtype in first_sheet.dtypes.items()
+            if not dtype.startswith(("int", "float"))
+        ]
+        metric = numeric_cols[0] if numeric_cols else "the key metric"
+        dimension = text_cols[0] if text_cols else "the main category"
+
+        suggestions = [
+            f"Give me a quick summary of the main patterns in {metric}.",
+            f"Compare {metric} across {dimension}.",
+            "Check missing values and unusual records in this dataset.",
+            "Tell me the most important insights in this file.",
+        ]
+        return suggestions
 
     def _on_analyze_clicked(self):
         """Generate analysis code and prepare it for review/editing."""
@@ -514,12 +873,13 @@ class MainWindow(QMainWindow):
 
         self._generated_code = ""
         self.code_editor.clear()
+        self._set_python_tab_visible(False)
         self._show_analyze_action()
         self._pending_query = query
         self._pending_files_meta = [file_meta]
         self._create_history_task(file_name, query)
         self.log_output.append(
-            f"Using provider: {settings.LLM_PROVIDER} ({self._current_model_label()})"
+            f"Using mode: {self._current_model_label()}"
         )
         self.log_output.append("Generating Python code...")
         self.result_output.setText("Waiting for analysis result.")
@@ -540,7 +900,7 @@ class MainWindow(QMainWindow):
         dialog.settings_saved.connect(self._refresh_api_status)
         if dialog.exec():
             self.log_output.append(
-                f"API settings saved: {settings.LLM_PROVIDER} ({self._current_model_label()})"
+                f"Settings saved for {self._current_model_label()} mode."
             )
             self._refresh_api_status()
 
@@ -548,6 +908,8 @@ class MainWindow(QMainWindow):
         self._task_open = False
         self._active_task_id = None
         self.app_stack.setCurrentIndex(0)
+        self._set_python_tab_visible(False)
+        self._refresh_overview_ui(None)
         self._set_task_title()
         self._set_task_controls_enabled(False)
 
@@ -560,11 +922,16 @@ class MainWindow(QMainWindow):
             self._update_history_task("Closed", "Started over", finished=True)
 
         self.loaded_files.clear()
+        self._dataset_overviews.clear()
+        self._dataset_row_widgets.clear()
         self.dataset_list.clear()
         self.prompt_input.clear()
         self.code_editor.clear()
         self.result_output.clear()
         self.log_output.clear()
+        self.overview_popover.hide()
+        self._hide_suggestion_popover()
+        self._set_python_tab_visible(False)
         self._show_analyze_action()
         self._pending_files_meta = None
         self._pending_query = None
@@ -572,6 +939,7 @@ class MainWindow(QMainWindow):
         self._active_worker_mode = ""
         self._active_task_id = None
         self._reset_transcript()
+        self._refresh_overview_ui()
 
         self._task_open = True
         self.app_stack.setCurrentIndex(1)
@@ -626,6 +994,7 @@ class MainWindow(QMainWindow):
             "dataset": dataset,
             "query": query,
             "status": "Generating code",
+            "status_detail": "",
             "created_at": now,
             "updated_at": now,
             "finished": False,
@@ -653,7 +1022,8 @@ class MainWindow(QMainWindow):
         if task is None:
             return
 
-        task["status"] = f"{status}: {detail}" if detail else status
+        task["status"] = status
+        task["status_detail"] = detail
         task["updated_at"] = self._history_timestamp()
         task["finished"] = finished
         task.update(updates)
@@ -675,11 +1045,12 @@ class MainWindow(QMainWindow):
 
         files_meta = list(task.get("files_meta") or [])
         self.loaded_files.clear()
+        self._dataset_row_widgets.clear()
         self.dataset_list.clear()
         for file_meta in files_meta:
             display_name = self._dataset_display_name(file_meta.file_path)
             self.loaded_files[display_name] = file_meta
-            self.dataset_list.addItem(display_name)
+            self._add_dataset_item(display_name)
 
         if self.dataset_list.count():
             self.dataset_list.setCurrentRow(0)
@@ -707,11 +1078,14 @@ class MainWindow(QMainWindow):
         self.page_container.setCurrentIndex(0)
         self._set_task_controls_enabled(True)
         self._set_task_title(task_id)
+        self._refresh_overview_ui()
 
         if code:
+            self._set_python_tab_visible(True)
             self._show_apply_action(retry=True)
             self.analysis_tabs.setCurrentIndex(1 if error else 0)
         else:
+            self._set_python_tab_visible(False)
             self._show_analyze_action()
             self.analysis_tabs.setCurrentIndex(0)
 
@@ -735,7 +1109,7 @@ class MainWindow(QMainWindow):
             self.task_title_label.clear()
             self.task_title_label.setVisible(False)
             return
-        self.task_title_label.setText(f"Session #{task['id']} - {task.get('status', 'Open')}")
+        self.task_title_label.setText(f"Session #{task['id']}")
         self.task_title_label.setVisible(True)
 
     def _refresh_api_status(self) -> None:
@@ -752,11 +1126,9 @@ class MainWindow(QMainWindow):
             )
 
     def _current_model_label(self) -> str:
+        return "DevOps" if settings.LLM_PROVIDER == "gemini" else "Dify"
         if settings.LLM_PROVIDER == "gemini":
             return f"DevOps · {settings.GEMINI_MODEL}"
-        if settings.LLM_PROVIDER == "deepseek":
-            return f"DeepSeek · {settings.DEEPSEEK_MODEL}"
-        return "Dify primary"
 
     def _run_generate(self):
         """生成代码并展示到可编辑区域，等待用户点击 Apply 后再执行。"""
@@ -778,6 +1150,7 @@ class MainWindow(QMainWindow):
         self.apply_btn.setVisible(False)
 
     def _show_apply_action(self, retry: bool = False) -> None:
+        self._set_python_tab_visible(True)
         self.run_btn.setVisible(False)
         self.apply_btn.setVisible(True)
         self.apply_btn.setEnabled(True)
@@ -882,6 +1255,7 @@ class MainWindow(QMainWindow):
                 self._transcript["execution"] = (
                     "Python code is ready. Review it in the Python tab, then click Apply."
                 )
+                self._set_python_tab_visible(True)
                 self.analysis_tabs.setCurrentIndex(1)
                 self._show_apply_action()
                 self._update_history_task(
@@ -899,6 +1273,7 @@ class MainWindow(QMainWindow):
                 )
                 self._pending_query = None
                 self._pending_files_meta = None
+                self._set_python_tab_visible(False)
                 self._show_analyze_action()
                 self._update_history_task(
                     "Failed",
@@ -914,6 +1289,7 @@ class MainWindow(QMainWindow):
                 self._append_system_event("Execution completed")
                 self.log_output.append("Execution completed.")
                 self._transcript["execution"] = output_text or "Execution completed with no stdout."
+                self._set_python_tab_visible(True)
                 self._update_history_task(
                     "Completed",
                     finished=True,
@@ -933,6 +1309,7 @@ class MainWindow(QMainWindow):
                     "The Python code could not be executed.\n"
                     "Review or reset the code, then click Apply Again."
                 )
+                self._set_python_tab_visible(True)
                 self._update_history_task(
                     "Needs correction",
                     finished=False,
@@ -954,6 +1331,7 @@ class MainWindow(QMainWindow):
                 "The Python code could not be executed.\n"
                 "Review or reset the code, then click Apply Again."
             )
+            self._set_python_tab_visible(True)
             self.analysis_tabs.setCurrentIndex(1)
             self._show_apply_action(retry=True)
             self._update_history_task(
@@ -969,6 +1347,7 @@ class MainWindow(QMainWindow):
             )
             self._pending_query = None
             self._pending_files_meta = None
+            self._set_python_tab_visible(False)
             self._show_analyze_action()
             self._update_history_task(
                 "Failed",
@@ -1043,9 +1422,15 @@ class MainWindow(QMainWindow):
         if not self._generated_code:
             return
         self.code_editor.setPlainText(self._generated_code)
+        self._set_python_tab_visible(True)
         self.analysis_tabs.setCurrentIndex(1)
         if self._pending_files_meta:
             self._show_apply_action(retry=True)
+
+    def _set_python_tab_visible(self, visible: bool) -> None:
+        self.analysis_tabs.tabBar().setTabVisible(self.python_tab_index, visible)
+        if not visible:
+            self.analysis_tabs.setCurrentIndex(0)
 
     @staticmethod
     def _format_json(value) -> str:
@@ -1279,22 +1664,23 @@ class MainWindow(QMainWindow):
                 border: none;
                 font-size: 13px;
                 color: #374151;
+                outline: none;
             }
 
             QListWidget#datasetList::item {
-                padding: 8px;
-                border-radius: 6px;
-                margin-bottom: 2px;
+                padding: 0px;
+                margin: 0 0 6px 0;
+                border: none;
+                background: transparent;
             }
 
             QListWidget#datasetList::item:hover {
-                background-color: #E5E7EB;
+                background: transparent;
             }
 
             QListWidget#datasetList::item:selected {
-                background-color: #DBEAFE;
-                color: #1D4ED8;
-                font-weight: 600;
+                background: transparent;
+                color: #374151;
             }
 
             /* Logs */
@@ -1319,6 +1705,23 @@ class MainWindow(QMainWindow):
                 font-size: 15px;
                 line-height: 1.6;
                 color: #111827;
+            }
+
+            QPushButton#suggestionTriggerBtn {
+                background-color: #F8FAFC;
+                color: #374151;
+                border: 1px solid #E5E7EB;
+                border-radius: 999px;
+                padding: 5px 12px;
+                font-size: 12px;
+                font-weight: 500;
+                min-height: 24px;
+            }
+
+            QPushButton#suggestionTriggerBtn:hover {
+                background-color: #EFF6FF;
+                border-color: #D1D5DB;
+                color: #1D4ED8;
             }
 
             QLabel#codePanelLabel {
@@ -1385,9 +1788,9 @@ class MainWindow(QMainWindow):
             /* ========================================================================= */
 
             QFrame#commandBar {
-                background-color: #F8F9FA;
-                border: 1px solid #DADCE0;
-                border-radius: 12px;
+                background-color: rgba(255, 255, 255, 0.9);
+                border: 1px solid #E5E7EB;
+                border-radius: 16px;
             }
 
             QTextEdit#promptInput {
