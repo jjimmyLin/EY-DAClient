@@ -11,7 +11,16 @@ from PySide6.QtCore import (
     QEasingCurve,
     QPropertyAnimation,
 )
-from PySide6.QtGui import QColor, QCursor, QMouseEvent
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QCursor,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPixmap,
+    QPolygon,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
@@ -31,6 +40,8 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QProgressBar,
     QStyle,
+    QMenu,
+    QMessageBox,
 )
 from ui.history_page import HistoryPage
 from ui.decision_panel import DecisionPanel, OptionItem, DECISION_PANEL_STYLE
@@ -73,19 +84,20 @@ class TitleBar(QWidget):
         layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(12)
 
-        # Logo
-        self.logo_label = QLabel("EY")
+        self.logo_label = QLabel()
         self.logo_label.setObjectName("titleBarLogo")
-
-        # Title
-        self.title_label = QLabel(self.window().windowTitle())
-        self.title_label.setObjectName("titleBarText")
+        self.logo_label.setFixedSize(34, 28)
+        self.logo_label.setPixmap(self._build_logo_pixmap())
+        self.logo_label.setToolTip("EY")
 
         self.session_label = QLabel("")
         self.session_label.setObjectName("titleBarSessionText")
 
         layout.addWidget(self.logo_label)
-        layout.addWidget(self.title_label)
+        self.menu_layout = QHBoxLayout()
+        self.menu_layout.setContentsMargins(4, 0, 0, 0)
+        self.menu_layout.setSpacing(2)
+        layout.addLayout(self.menu_layout)
         layout.addWidget(self.session_label)
         layout.addStretch()
 
@@ -119,8 +131,38 @@ class TitleBar(QWidget):
         layout.addWidget(self.btn_maximize)
         layout.addWidget(self.btn_close)
 
+    @staticmethod
+    def _build_logo_pixmap() -> QPixmap:
+        pixmap = QPixmap(34, 28)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#FFE600"))
+        painter.drawPolygon(
+            QPolygon(
+                [
+                    QPoint(2, 8),
+                    QPoint(32, 1),
+                    QPoint(32, 7),
+                ]
+            )
+        )
+        painter.setPen(QColor("#2E2E38"))
+        font = painter.font()
+        font.setFamily("Arial")
+        font.setPointSize(12)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(QRect(1, 8, 32, 19), Qt.AlignCenter, "EY")
+        painter.end()
+        return pixmap
+
     def add_action_widget(self, widget: QWidget) -> None:
         self.actions_layout.addWidget(widget)
+
+    def add_menu_widget(self, widget: QWidget) -> None:
+        self.menu_layout.addWidget(widget)
 
     def _toggle_maximize(self):
         if self.window().isMaximized():
@@ -247,11 +289,13 @@ class MainWindow(QMainWindow):
 
         self.task_title_label = self.title_bar.session_label
 
-        self.start_over_btn = QPushButton("Start Over")
-        self.start_over_btn.setObjectName("titleActionBtn")
-        self.start_over_btn.setCursor(Qt.PointingHandCursor)
-        self.start_over_btn.clicked.connect(self._start_new_task)
-        self.title_bar.add_action_widget(self.start_over_btn)
+        self.file_menu_btn = self._make_title_menu_button("File")
+        self.view_menu_btn = self._make_title_menu_button("View")
+        self.help_menu_btn = self._make_title_menu_button("Help")
+        self.title_bar.add_menu_widget(self.file_menu_btn)
+        self.title_bar.add_menu_widget(self.view_menu_btn)
+        self.title_bar.add_menu_widget(self.help_menu_btn)
+        self._build_title_menus()
 
         self.history_btn = QPushButton("History")
         self.history_btn.setObjectName("titleActionBtn")
@@ -274,7 +318,14 @@ class MainWindow(QMainWindow):
         start_layout.setSpacing(18)
         start_layout.addStretch()
 
-        self.start_task_btn = QPushButton("New Task")
+        start_title = QLabel("Data Analysis")
+        start_title.setObjectName("startTitle")
+        start_title.setAlignment(Qt.AlignCenter)
+        start_note = QLabel("Dify-guided analysis. Local Python execution.")
+        start_note.setObjectName("startNote")
+        start_note.setAlignment(Qt.AlignCenter)
+
+        self.start_task_btn = QPushButton("New Analysis")
         self.start_task_btn.setObjectName("startTaskBtn")
         self.start_task_btn.setCursor(Qt.PointingHandCursor)
         self.start_task_btn.setFixedSize(140, 40)
@@ -285,10 +336,12 @@ class MainWindow(QMainWindow):
         start_button_row.addWidget(self.start_task_btn)
         start_button_row.addStretch()
 
-        caution = QLabel("Code runs locally after Apply.")
+        caution = QLabel("Full datasets are processed locally.")
         caution.setObjectName("startCaution")
         caution.setAlignment(Qt.AlignCenter)
 
+        start_layout.addWidget(start_title)
+        start_layout.addWidget(start_note)
         start_layout.addLayout(start_button_row)
         start_layout.addWidget(caution)
         start_layout.addStretch()
@@ -401,11 +454,31 @@ class MainWindow(QMainWindow):
         canvas_layout.setContentsMargins(24, 16, 24, 18)
         canvas_layout.setSpacing(10)
 
+        workspace_header = QHBoxLayout()
+        workspace_header.setContentsMargins(2, 0, 2, 0)
+        workspace_header.setSpacing(8)
+        header_text = QVBoxLayout()
+        header_text.setContentsMargins(0, 0, 0, 0)
+        header_text.setSpacing(1)
+        self.workspace_title_label = QLabel("")
+        self.workspace_title_label.setObjectName("workspaceTitle")
+        self.workspace_scope_label = QLabel("")
+        self.workspace_scope_label.setObjectName("workspaceScope")
+        header_text.addWidget(self.workspace_title_label)
+        header_text.addWidget(self.workspace_scope_label)
+        workspace_header.addLayout(header_text)
+        workspace_header.addStretch()
+        self.header_code_btn = QPushButton("View code")
+        self.header_code_btn.setObjectName("workspaceActionBtn")
+        self.header_code_btn.setCursor(Qt.PointingHandCursor)
+        self.header_code_btn.setVisible(False)
+        self.header_code_btn.clicked.connect(self._show_code_workspace)
+        workspace_header.addWidget(self.header_code_btn)
+        canvas_layout.addLayout(workspace_header)
+
         self.result_output = AnalysisResultPanel()
         self.result_output.setObjectName("resultOutput")
-        self.result_output.setPlaceholderText(
-            "The execution result will appear here first."
-        )
+        self.result_output.clear()
 
         self.code_editor = QPlainTextEdit()
         self.code_editor.setObjectName("codeEditor")
@@ -602,6 +675,101 @@ class MainWindow(QMainWindow):
         self._refresh_overview_ui()
         self._show_start_page()
         QTimer.singleShot(0, self._position_floating_composer)
+
+    def _make_title_menu_button(self, text: str) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("titleMenuBtn")
+        button.setCursor(Qt.PointingHandCursor)
+        button.setFixedHeight(26)
+        return button
+
+    def _build_title_menus(self) -> None:
+        file_menu = QMenu(self)
+        new_action = QAction("New Analysis", self)
+        new_action.setShortcut(QKeySequence("Ctrl+N"))
+        new_action.triggered.connect(self._request_new_analysis)
+        add_action = QAction("Add Dataset...", self)
+        add_action.setShortcut(QKeySequence("Ctrl+O"))
+        add_action.triggered.connect(self._on_upload_clicked)
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(new_action)
+        file_menu.addAction(add_action)
+        file_menu.addSeparator()
+        file_menu.addAction(exit_action)
+        self.file_menu_btn.setMenu(file_menu)
+
+        view_menu = QMenu(self)
+        self.view_context_action = QAction("Analysis Context", self)
+        self.view_context_action.setShortcut(QKeySequence("Ctrl+B"))
+        self.view_context_action.triggered.connect(self._toggle_context_panel)
+        self.view_code_action = QAction("Python Code", self)
+        self.view_code_action.setShortcut(QKeySequence("Ctrl+`"))
+        self.view_code_action.setEnabled(False)
+        self.view_code_action.triggered.connect(self._show_code_workspace)
+        self.view_activity_action = QAction("Activity", self)
+        self.view_activity_action.setShortcut(QKeySequence("Ctrl+J"))
+        self.view_activity_action.triggered.connect(self._toggle_activity_drawer)
+        view_menu.addAction(self.view_context_action)
+        view_menu.addAction(self.view_code_action)
+        view_menu.addAction(self.view_activity_action)
+        self.view_menu_btn.setMenu(view_menu)
+
+        help_menu = QMenu(self)
+        guide_action = QAction("Quick Guide", self)
+        guide_action.triggered.connect(self._show_quick_guide)
+        about_action = QAction("About", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(guide_action)
+        help_menu.addSeparator()
+        help_menu.addAction(about_action)
+        self.help_menu_btn.setMenu(help_menu)
+
+    def _show_quick_guide(self) -> None:
+        QMessageBox.information(
+            self,
+            "Quick Guide",
+            "1. Open Analysis Context and add one or more datasets.\n"
+            "2. Ask for an analysis in the floating prompt.\n"
+            "3. Review the generated Python code when needed.\n"
+            "4. Apply the validated code and inspect the local result.\n\n"
+            "Dataset metadata and the request are sent to Dify. "
+            "The full dataset is analyzed locally.",
+        )
+
+    def _show_about(self) -> None:
+        QMessageBox.about(
+            self,
+            "About",
+            "EY Data Analysis Assistant\n"
+            "Dify-guided analysis with auditable local Python execution.",
+        )
+
+    def _request_new_analysis(self) -> None:
+        has_work = bool(
+            self.loaded_files
+            or self._generated_code
+            or self._current_analysis_result
+            or self.prompt_input.toPlainText().strip()
+        )
+        if self._task_open and has_work:
+            choice = QMessageBox.question(
+                self,
+                "New Analysis",
+                "Start a new analysis?\n\n"
+                "The current session will remain available in History.",
+                QMessageBox.Cancel | QMessageBox.Yes,
+                QMessageBox.Cancel,
+            )
+            if choice != QMessageBox.Yes:
+                return
+        self._start_new_task()
+
+    def _show_code_workspace(self) -> None:
+        if not self.analysis_tabs.tabBar().isTabVisible(self.python_tab_index):
+            return
+        self.page_container.setCurrentIndex(0)
+        self.analysis_tabs.setCurrentIndex(self.python_tab_index)
 
     def _make_nav_button(
         self,
@@ -1086,6 +1254,7 @@ class MainWindow(QMainWindow):
                 break
 
     def _refresh_overview_ui(self, dataset_name: str | None = None) -> None:
+        self._refresh_workspace_header()
         active_dataset = self._current_dataset_name()
         has_dataset = bool(active_dataset)
         self.suggestion_btn.setVisible(has_dataset)
@@ -1135,6 +1304,30 @@ class MainWindow(QMainWindow):
             self._set_suggestion_options([])
             if active_ready:
                 self._set_suggestion_options(active_data.get("suggestions") or self._build_default_suggestions(active_dataset))
+
+    def _refresh_workspace_header(self) -> None:
+        if not hasattr(self, "workspace_scope_label"):
+            return
+        count = len(self.loaded_files)
+        if count == 0:
+            scope = ""
+        elif count == 1:
+            scope = next(iter(self.loaded_files))
+        else:
+            scope = f"{count} datasets in analysis context"
+        self.workspace_scope_label.setText(scope)
+        self.workspace_scope_label.setVisible(bool(scope))
+
+        task = self._find_history_task(self._active_task_id)
+        query = str((task or {}).get("query") or "").strip()
+        if query:
+            compact = query if len(query) <= 72 else query[:69] + "..."
+            self.workspace_title_label.setText(compact)
+        else:
+            self.workspace_title_label.clear()
+        self.workspace_title_label.setVisible(
+            bool(self.workspace_title_label.text())
+        )
 
     def _set_suggestion_options(self, suggestions: list[str]) -> None:
         self._suggestion_buttons = suggestions[:4]
@@ -1338,7 +1531,7 @@ class MainWindow(QMainWindow):
         self._set_task_controls_enabled(True)
         self._set_task_title()
         self.log_output.append("New task started.")
-        self.result_output.setText("Import a dataset, then ask an analysis question.")
+        self.result_output.set_empty_state("Add a dataset to begin.")
         self._composer_collapsed = False
         self._composer_pinned = True
         self.command_bar.show()
@@ -1379,7 +1572,6 @@ class MainWindow(QMainWindow):
         self._show_start_page()
 
     def _set_task_controls_enabled(self, enabled: bool) -> None:
-        self.start_over_btn.setVisible(enabled)
         self.history_btn.setVisible(enabled)
         self.settings_btn.setVisible(enabled)
         self.upload_btn.setEnabled(enabled)
@@ -1389,7 +1581,6 @@ class MainWindow(QMainWindow):
         self.apply_btn.setEnabled(enabled and self.apply_btn.isVisible())
         self.code_editor.setEnabled(enabled)
         self.code_reset_btn.setEnabled(enabled)
-        self.start_over_btn.setEnabled(enabled)
 
     def _show_history_page(self) -> None:
         self._refresh_history_page()
@@ -1887,7 +2078,6 @@ class MainWindow(QMainWindow):
         self.upload_btn.setEnabled(not busy)
         self.settings_btn.setEnabled(not busy)
         self.history_btn.setEnabled(not busy)
-        self.start_over_btn.setEnabled(not busy)
         self.code_reset_btn.setEnabled(not busy)
         self.code_editor.setEnabled(not busy)
         if busy:
@@ -2006,6 +2196,11 @@ class MainWindow(QMainWindow):
 
     def _set_python_tab_visible(self, visible: bool) -> None:
         self.analysis_tabs.tabBar().setTabVisible(self.python_tab_index, visible)
+        self.analysis_tabs.tabBar().setVisible(visible)
+        if hasattr(self, "view_code_action"):
+            self.view_code_action.setEnabled(visible)
+        if hasattr(self, "header_code_btn"):
+            self.header_code_btn.setVisible(visible)
         if not visible:
             self.analysis_tabs.setCurrentIndex(0)
 
@@ -2067,6 +2262,55 @@ class MainWindow(QMainWindow):
                 letter-spacing: 0;
                 padding-left: 8px;
                 border-left: 1px solid #DADCE0;
+            }
+
+            QPushButton#titleMenuBtn {
+                background-color: transparent;
+                color: #3C4043;
+                border: none;
+                border-radius: 4px;
+                padding: 2px 7px;
+                font-size: 11px;
+                font-weight: 500;
+            }
+
+            QPushButton#titleMenuBtn:hover,
+            QPushButton#titleMenuBtn::menu-indicator {
+                background-color: #E8EAED;
+            }
+
+            QPushButton#titleMenuBtn::menu-indicator {
+                image: none;
+                width: 0;
+            }
+
+            QMenu {
+                background-color: #FFFFFF;
+                color: #202124;
+                border: 1px solid #DADCE0;
+                border-radius: 6px;
+                padding: 5px;
+                font-size: 11px;
+            }
+
+            QMenu::item {
+                padding: 6px 28px 6px 10px;
+                border-radius: 4px;
+            }
+
+            QMenu::item:selected {
+                background-color: #E8F0FE;
+                color: #174EA6;
+            }
+
+            QMenu::item:disabled {
+                color: #9AA0A6;
+            }
+
+            QMenu::separator {
+                height: 1px;
+                background: #E8EAED;
+                margin: 4px 6px;
             }
 
             QPushButton#titleActionBtn {
@@ -2348,6 +2592,32 @@ class MainWindow(QMainWindow):
             }
 
             /* Result Output */
+
+            QLabel#workspaceTitle {
+                color: #202124;
+                font-size: 13px;
+                font-weight: 650;
+            }
+
+            QLabel#workspaceScope {
+                color: #6B7280;
+                font-size: 10px;
+                font-weight: 500;
+            }
+
+            QPushButton#workspaceActionBtn {
+                background-color: #FFFFFF;
+                color: #3C4043;
+                border: 1px solid #DADCE0;
+                border-radius: 6px;
+                padding: 5px 9px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+
+            QPushButton#workspaceActionBtn:hover {
+                background-color: #F1F3F4;
+            }
 
             QTextEdit#resultOutput {
                 border: none;

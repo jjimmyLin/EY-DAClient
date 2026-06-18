@@ -728,3 +728,31 @@ def test_analysis_navigation_owns_dataset_context_and_composer_is_centered(qapp)
     expected_x = (window.workspace.width() - window.command_bar.width()) // 2
     assert abs(window.command_bar.x() - expected_x) <= 1
     window.close()
+
+
+def test_minimal_desktop_menus_expose_only_global_commands(qapp):
+    window = MainWindow()
+    window.show()
+
+    assert window.file_menu_btn.text() == "File"
+    assert window.view_menu_btn.text() == "View"
+    assert window.help_menu_btn.text() == "Help"
+    assert [action.text() for action in window.file_menu_btn.menu().actions()] == [
+        "New Analysis",
+        "Add Dataset...",
+        "",
+        "Exit",
+    ]
+    assert [action.text() for action in window.view_menu_btn.menu().actions()] == [
+        "Analysis Context",
+        "Python Code",
+        "Activity",
+    ]
+    assert not window.view_code_action.isEnabled()
+
+    window._generated_code = "print('ok')"
+    window._set_python_tab_visible(True)
+
+    assert window.view_code_action.isEnabled()
+    assert not window.header_code_btn.isHidden()
+    window.close()

@@ -46,7 +46,7 @@ class AnalysisResultPanel(QWidget):
         self.content_layout.setContentsMargins(8, 4, 16, 16)
         self.content_layout.setSpacing(18)
         self.scroll.setWidget(self.content)
-        self.setText("The execution result will appear here first.")
+        self.set_empty_state("Add a dataset to begin.")
 
     def clear(self) -> None:
         self._clear_layout()
@@ -64,7 +64,16 @@ class AnalysisResultPanel(QWidget):
 
     def setPlaceholderText(self, text: str) -> None:
         if not self._plain_text:
-            self.setPlainText(text)
+            self.set_empty_state(text)
+
+    def set_empty_state(self, text: str) -> None:
+        self._clear_layout()
+        self._plain_text = ""
+        empty = QLabel(str(text or ""))
+        empty.setObjectName("resultEmpty")
+        empty.setAlignment(Qt.AlignCenter)
+        self.content_layout.addWidget(empty)
+        self.content_layout.addStretch()
 
     def setReadOnly(self, value: bool) -> None:
         del value
@@ -262,6 +271,8 @@ class AnalysisResultPanel(QWidget):
             item = self.content_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
 
     @staticmethod
