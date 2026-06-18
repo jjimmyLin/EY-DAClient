@@ -43,6 +43,10 @@ class CircularStatusButton(QPushButton):
             self._spinner_angle = 0
         self.update()
 
+    def setGlyph(self, glyph: str) -> None:
+        self._glyph = glyph
+        self.update()
+
     def isBusy(self) -> bool:
         return self._busy
 
@@ -108,6 +112,7 @@ class CircularStatusButton(QPushButton):
 class DatasetRowWidget(QFrame):
     activated = Signal(str)
     overview_requested = Signal(str)
+    delete_requested = Signal(str)
 
     def __init__(self, dataset_name: str, parent=None):
         super().__init__(parent)
@@ -135,29 +140,54 @@ class DatasetRowWidget(QFrame):
         self.overview_button.clicked.connect(self._emit_overview_requested)
         layout.addWidget(self.overview_button, alignment=Qt.AlignVCenter)
 
+        self.delete_button = QPushButton("×")
+        self.delete_button.setObjectName("datasetDeleteButton")
+        self.delete_button.setFixedSize(20, 20)
+        self.delete_button.setCursor(Qt.PointingHandCursor)
+        self.delete_button.setToolTip("Remove dataset")
+        self.delete_button.clicked.connect(self._emit_delete_requested)
+        layout.addWidget(self.delete_button, alignment=Qt.AlignVCenter)
+
         self._update_elided_text()
         self._apply_selection_style()
 
     def _emit_overview_requested(self) -> None:
         self.overview_requested.emit(self.dataset_name)
 
+    def _emit_delete_requested(self) -> None:
+        self.delete_requested.emit(self.dataset_name)
+
     def setSelected(self, selected: bool) -> None:
         self._selected = selected
         self._apply_selection_style()
 
     def setBusy(self, busy: bool) -> None:
+        if busy:
+            self.overview_button.setGlyph("i")
         self.overview_button.setBusy(busy)
         self.overview_button.setEnabled(not busy)
+        self.overview_button.setVisible(True)
 
     def setReady(self, tooltip: str) -> None:
+        self.overview_button.setGlyph("i")
         self.overview_button.setBusy(False)
         self.overview_button.setEnabled(True)
         self.overview_button.setToolTip(tooltip)
+        self.overview_button.setVisible(True)
 
     def setQueued(self, tooltip: str) -> None:
+        self.overview_button.setGlyph("i")
         self.overview_button.setBusy(False)
         self.overview_button.setEnabled(False)
         self.overview_button.setToolTip(tooltip)
+        self.overview_button.setVisible(True)
+
+    def setRetry(self, tooltip: str) -> None:
+        self.overview_button.setGlyph("↻")
+        self.overview_button.setBusy(False)
+        self.overview_button.setEnabled(True)
+        self.overview_button.setToolTip(tooltip)
+        self.overview_button.setVisible(True)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -180,7 +210,7 @@ class DatasetRowWidget(QFrame):
 
     def _update_elided_text(self) -> None:
         metrics = QFontMetrics(self.name_label.font())
-        available = max(32, self.width() - 58)
+        available = max(32, self.width() - 84)
         self.name_label.setText(
             metrics.elidedText(self._full_text, Qt.ElideMiddle, available)
         )
@@ -199,6 +229,18 @@ class DatasetRowWidget(QFrame):
                     font-size: 12px;
                     font-weight: 600;
                 }
+                QPushButton#datasetDeleteButton {
+                    color: #64748B;
+                    background-color: transparent;
+                    border: none;
+                    border-radius: 10px;
+                    font-size: 14px;
+                    font-weight: 400;
+                }
+                QPushButton#datasetDeleteButton:hover {
+                    color: #B42318;
+                    background-color: #FEE4E2;
+                }
                 """
             )
         elif self._hovered:
@@ -214,6 +256,18 @@ class DatasetRowWidget(QFrame):
                     font-size: 12px;
                     font-weight: 500;
                 }
+                QPushButton#datasetDeleteButton {
+                    color: #64748B;
+                    background-color: transparent;
+                    border: none;
+                    border-radius: 10px;
+                    font-size: 14px;
+                    font-weight: 400;
+                }
+                QPushButton#datasetDeleteButton:hover {
+                    color: #B42318;
+                    background-color: #FEE4E2;
+                }
                 """
             )
         else:
@@ -228,6 +282,18 @@ class DatasetRowWidget(QFrame):
                     color: #374151;
                     font-size: 12px;
                     font-weight: 500;
+                }
+                QPushButton#datasetDeleteButton {
+                    color: #94A3B8;
+                    background-color: transparent;
+                    border: none;
+                    border-radius: 10px;
+                    font-size: 14px;
+                    font-weight: 400;
+                }
+                QPushButton#datasetDeleteButton:hover {
+                    color: #B42318;
+                    background-color: #FEE4E2;
                 }
                 """
             )

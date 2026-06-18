@@ -18,6 +18,7 @@ from core.executor import ExecutionResult, Executor
 from core.preprocessor import FileMeta
 from core.prompt_builder import PromptBuilder
 from llm import LLMError, get_client
+from llm.cancellation import CancellationToken
 
 WorkflowEvent = dict[str, object]
 EventCallback = Callable[[WorkflowEvent], None]
@@ -39,6 +40,7 @@ class WorkflowResult:
     clarification_question: str = ""
     clarification_options: list[dict[str, Any]] = field(default_factory=list)
     overview_result: dict[str, Any] | None = None
+    analysis_plan: dict[str, Any] | None = None
 
 
 class JsonContractError(Exception):
@@ -48,8 +50,12 @@ class JsonContractError(Exception):
 class AnalysisWorkflow:
     """Data-analysis workflow."""
 
-    def __init__(self) -> None:
-        self._client = get_client()
+    def __init__(
+        self,
+        cancellation_token: CancellationToken | None = None,
+    ) -> None:
+        self._cancellation_token = cancellation_token or CancellationToken()
+        self._client = get_client(cancellation_token=self._cancellation_token)
         self._validator = CodeValidator()
         self._executor = Executor()
         self._prompt_builder = PromptBuilder()
@@ -60,10 +66,37 @@ class AnalysisWorkflow:
         files_meta: list[FileMeta],
         user_query: str,
     ) -> WorkflowResult:
-        generated = self.generate_only(files_meta, user_query)
+        return self.prepare_analysis(files_meta, user_query)
+
+    def prepare_analysis(
+        self,
+        files_meta: list[FileMeta],
+        user_query: str,
+        event_callback: EventCallback | None = None,
+    ) -> WorkflowResult:
+        """Generate, preflight locally, and automatically repair failed code."""
+        generated = self.generate_only(
+            files_meta,
+            user_query,
+            event_callback=event_callback,
+        )
         if not generated.success:
+            if generated.code:
+                return self.execute_with_repair(
+                    generated.code,
+                    files_meta,
+                    user_query,
+                    analysis_plan=generated.analysis_plan,
+                    event_callback=event_callback,
+                )
             return generated
-        return self.execute_only(generated.code, files_meta)
+        return self.execute_with_repair(
+            generated.code,
+            files_meta,
+            user_query,
+            analysis_plan=generated.analysis_plan,
+            event_callback=event_callback,
+        )
 
     def overview_only(
         self,
@@ -71,14 +104,15 @@ class AnalysisWorkflow:
         event_callback: EventCallback | None = None,
     ) -> WorkflowResult:
         """Generate a lightweight overview for one uploaded dataset."""
-        fallback = self._fallback_overview(file_meta)
         try:
+            self._cancellation_token.raise_if_cancelled()
             self._emit(event_callback, "status", "Preparing dataset overview")
             raw = self._call_llm(
                 self._prompt_builder.build_dataset_overview_prompt(file_meta),
                 event_callback=event_callback,
             )
             overview = self._parse_overview(raw, file_meta)
+            self._cancellation_token.raise_if_cancelled()
             self._emit(event_callback, "status", "Dataset overview is ready")
             return WorkflowResult(
                 success=True,
@@ -87,15 +121,12 @@ class AnalysisWorkflow:
                 overview_result=overview,
             )
         except Exception as exc:
-            fallback["summary"] = (
-                f"{fallback['summary']} AI overview is temporarily unavailable."
-            )
             return WorkflowResult(
-                success=True,
+                success=False,
                 code="",
                 execution=None,
                 error=str(exc),
-                overview_result=fallback,
+                overview_result=None,
             )
 
     def generate_only(
@@ -105,12 +136,21 @@ class AnalysisWorkflow:
         event_callback: EventCallback | None = None,
     ) -> WorkflowResult:
         """Generate Python code for the current dataset and query."""
+        code = ""
+        analysis_plan: dict[str, Any] = {}
         try:
             self._emit(event_callback, "status", "Preparing analysis request")
-            code = self._call_llm(
-                self._prompt_builder.build_analysis_prompt(files_meta, user_query),
-                event_callback=event_callback,
-            )
+            prompt = self._prompt_builder.build_analysis_prompt(files_meta, user_query)
+            if hasattr(self._client, "generate_analysis"):
+                generated = self._client.generate_analysis(
+                    prompt,
+                    event_callback=event_callback,
+                )
+                code = str(generated.get("code") or "")
+                analysis_plan = generated.get("plan") or {}
+            else:
+                code = self._call_llm(prompt, event_callback=event_callback)
+                analysis_plan = {}
 
             self._emit(event_callback, "status", "Validating generated code safety")
             validation_result = self._validator.validate(code)
@@ -123,13 +163,15 @@ class AnalysisWorkflow:
                 code=code,
                 execution=None,
                 validation_result={"is_safe": validation_result.is_safe, "violations": validation_result.violations},
+                analysis_plan=analysis_plan,
             )
 
         except SecurityError as e:
             return WorkflowResult(
                 success=False,
-                code="",
+                code=code,
                 execution=None,
+                analysis_plan=analysis_plan,
                 error=f"❌ 安全检查失败: {str(e)}",
             )
         except LLMError as e:
@@ -148,6 +190,20 @@ class AnalysisWorkflow:
     ) -> WorkflowResult:
         """Execute approved code."""
         self._emit(event_callback, "status", "Executing approved code")
+        validation_result = self._validator.validate(code)
+        try:
+            validation_result.raise_if_unsafe()
+        except SecurityError as exc:
+            return WorkflowResult(
+                success=False,
+                code=code,
+                execution=None,
+                error=f"安全检查失败: {exc}",
+                validation_result={
+                    "is_safe": False,
+                    "violations": validation_result.violations,
+                },
+            )
         result = self._executor.run(code, files_meta)
         self._emit(
             event_callback,
@@ -161,7 +217,103 @@ class AnalysisWorkflow:
             code=code,
             execution=result,
             error="" if result.success else (result.stderr or "执行失败"),
+            validation_result={
+                "is_safe": validation_result.is_safe,
+                "violations": validation_result.violations,
+            },
         )
+
+    def execute_with_repair(
+        self,
+        code: str,
+        files_meta: list[FileMeta],
+        user_query: str,
+        analysis_plan: dict[str, Any] | None = None,
+        event_callback: EventCallback | None = None,
+    ) -> WorkflowResult:
+        """Execute code and ask the provider to repair runtime failures."""
+        current_code = code
+        last_result: WorkflowResult | None = None
+
+        for attempt in range(self._max_retries + 1):
+            self._cancellation_token.raise_if_cancelled()
+            if attempt == 0:
+                self._emit(event_callback, "status", "Validating code locally")
+            else:
+                self._emit(
+                    event_callback,
+                    "status",
+                    f"Validating corrected code ({attempt}/{self._max_retries})",
+                )
+
+            last_result = self.execute_only(
+                current_code,
+                files_meta,
+                event_callback=event_callback,
+            )
+            last_result.retries_used = attempt
+            last_result.analysis_plan = analysis_plan or {}
+            if last_result.success:
+                self._emit(
+                    event_callback,
+                    "status",
+                    (
+                        "Corrected code passed local validation"
+                        if attempt
+                        else "Code passed local validation"
+                    ),
+                )
+                return last_result
+
+            if attempt >= self._max_retries:
+                break
+
+            repair_number = attempt + 1
+            self._emit(
+                event_callback,
+                "status",
+                f"Requesting automatic code correction ({repair_number}/{self._max_retries})",
+            )
+            try:
+                prompt = self._prompt_builder.build_repair_prompt(
+                    files_meta=files_meta,
+                    user_query=user_query,
+                    failed_code=current_code,
+                    error_message=last_result.error,
+                    analysis_plan=analysis_plan,
+                    attempt=repair_number,
+                )
+                if hasattr(self._client, "generate_analysis"):
+                    repaired = self._client.generate_analysis(
+                        prompt,
+                        event_callback=event_callback,
+                    )
+                    current_code = str(repaired.get("code") or "")
+                else:
+                    current_code = self._call_llm(
+                        prompt,
+                        event_callback=event_callback,
+                    )
+
+                validation = self._validator.validate(current_code)
+                validation.raise_if_unsafe()
+            except (LLMError, SecurityError) as exc:
+                return WorkflowResult(
+                    success=False,
+                    code=current_code,
+                    execution=last_result.execution,
+                    error=f"Automatic code correction failed: {exc}",
+                    retries_used=repair_number,
+                    analysis_plan=analysis_plan or {},
+                )
+
+        assert last_result is not None
+        last_result.code = current_code
+        last_result.error = (
+            f"Code still failed after {self._max_retries} automatic correction "
+            f"attempt(s).\n{last_result.error}"
+        )
+        return last_result
 
     def _call_llm(
         self,
@@ -184,13 +336,28 @@ class AnalysisWorkflow:
             suggestions = []
 
         first_sheet = file_meta.sheets[0] if file_meta.sheets else None
+        def integer_value(value: Any, fallback: int) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return fallback
+
         return {
             "dataset_kind": str(payload.get("dataset_kind") or "Dataset"),
             "topic": str(payload.get("topic") or "General business data"),
             "summary": str(payload.get("summary") or "No overview summary returned."),
-            "rows": int(payload.get("rows") or (first_sheet.rows if first_sheet else 0)),
-            "columns": int(payload.get("columns") or (first_sheet.cols if first_sheet else 0)),
-            "sheet_count": int(payload.get("sheet_count") or file_meta.sheet_count),
+            "rows": integer_value(
+                payload.get("rows"),
+                first_sheet.rows if first_sheet else 0,
+            ),
+            "columns": integer_value(
+                payload.get("columns"),
+                first_sheet.cols if first_sheet else 0,
+            ),
+            "sheet_count": integer_value(
+                payload.get("sheet_count"),
+                file_meta.sheet_count,
+            ),
             "suggestions": [str(item).strip() for item in suggestions if str(item).strip()][:4],
         }
 

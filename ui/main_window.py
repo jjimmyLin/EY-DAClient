@@ -1,6 +1,16 @@
 import sys
 from datetime import datetime
-from PySide6.QtCore import Qt, QPoint, QRect, QSize, QThread, QTimer, QEvent
+from PySide6.QtCore import (
+    Qt,
+    QPoint,
+    QRect,
+    QSize,
+    QThread,
+    QTimer,
+    QEvent,
+    QEasingCurve,
+    QPropertyAnimation,
+)
 from PySide6.QtGui import QColor, QCursor, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,12 +29,20 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QFileDialog,
     QGraphicsDropShadowEffect,
+    QProgressBar,
+    QStyle,
 )
 from ui.history_page import HistoryPage
 from ui.decision_panel import DecisionPanel, OptionItem, DECISION_PANEL_STYLE
 from ui.api_settings_dialog import ApiSettingsDialog
-from ui.floating_controls import DatasetRowWidget, SuggestionPopover
+from ui.floating_controls import (
+    CircularStatusButton,
+    DatasetRowWidget,
+    SuggestionPopover,
+)
 from ui.overview_popover import OverviewPopover
+from ui.result_panel import AnalysisResultPanel, RESULT_PANEL_STYLE
+from core.analysis_result import AnalysisResult
 from config.settings import settings
 from workers.analysis_worker import AnalysisWorker
 
@@ -179,15 +197,29 @@ class MainWindow(QMainWindow):
         self._task_history = []
         self._active_task_id = None
         self._generated_code = ""
+        self._analysis_plan = {}
+        self._current_analysis_result = None
+        self._verified_code = ""
+        self._verified_execution = None
         self._task_open = False
         self._dataset_overviews = {}
         self._dataset_row_widgets = {}
         self._overview_loading_dataset = None
+        self._overview_loading_meta = None
         self._suggestion_buttons = []
         self._suggestion_hide_timer = QTimer(self)
         self._suggestion_hide_timer.setSingleShot(True)
         self._suggestion_hide_timer.setInterval(160)
         self._suggestion_hide_timer.timeout.connect(self._maybe_hide_suggestion_popover)
+        self._context_panel_open = False
+        self._composer_collapsed = False
+        self._composer_pinned = False
+        self._composer_hover_blocked = False
+        self._composer_animation = None
+        self._composer_hide_timer = QTimer(self)
+        self._composer_hide_timer.setSingleShot(True)
+        self._composer_hide_timer.setInterval(360)
+        self._composer_hide_timer.timeout.connect(self._maybe_collapse_composer)
 
         self._init_ui()
 
@@ -275,17 +307,63 @@ class MainWindow(QMainWindow):
         self.app_stack.addWidget(workspace_root)
 
         # =========================================================================
-        # Sidebar
+        # Navigation rail and contextual data panel
         # =========================================================================
 
-        sidebar = QWidget()
-        sidebar.setObjectName("sidebar")
-        sidebar.setMinimumWidth(200)
-        sidebar.setMaximumWidth(360)
+        self.left_shell = QWidget()
+        self.left_shell.setObjectName("leftShell")
+        self.left_shell.setFixedWidth(48)
+        left_shell_layout = QHBoxLayout(self.left_shell)
+        left_shell_layout.setContentsMargins(0, 0, 0, 0)
+        left_shell_layout.setSpacing(0)
 
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(20, 24, 20, 24)
-        sidebar_layout.setSpacing(16)
+        navigation_rail = QFrame()
+        navigation_rail.setObjectName("navigationRail")
+        navigation_rail.setFixedWidth(48)
+        rail_layout = QVBoxLayout(navigation_rail)
+        rail_layout.setContentsMargins(6, 10, 6, 10)
+        rail_layout.setSpacing(6)
+
+        self.nav_analysis_btn = self._make_nav_button(
+            QStyle.SP_FileDialogContentsView,
+            "Analysis context",
+        )
+        self.nav_clean_btn = self._make_nav_button(
+            QStyle.SP_BrowserReload,
+            "Data cleaning (coming soon)",
+        )
+        self.nav_metric_btn = self._make_nav_button(
+            QStyle.SP_FileDialogInfoView,
+            "Metrics (coming soon)",
+        )
+        self.nav_clean_btn.setEnabled(False)
+        self.nav_metric_btn.setEnabled(False)
+        rail_layout.addWidget(self.nav_analysis_btn)
+        rail_layout.addWidget(self.nav_clean_btn)
+        rail_layout.addWidget(self.nav_metric_btn)
+        rail_layout.addStretch()
+
+        self.sidebar = QWidget()
+        self.sidebar.setObjectName("sidebar")
+        self.sidebar.setFixedWidth(220)
+        self.sidebar.setVisible(False)
+
+        sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar_layout.setContentsMargins(14, 16, 14, 16)
+        sidebar_layout.setSpacing(12)
+
+        context_header = QHBoxLayout()
+        context_title = QLabel("DATASETS")
+        context_title.setObjectName("contextPanelTitle")
+        self.context_close_btn = QPushButton("×")
+        self.context_close_btn.setObjectName("contextCloseBtn")
+        self.context_close_btn.setFixedSize(24, 24)
+        self.context_close_btn.setCursor(Qt.PointingHandCursor)
+        self.context_close_btn.setToolTip("Close dataset panel")
+        context_header.addWidget(context_title)
+        context_header.addStretch()
+        context_header.addWidget(self.context_close_btn)
+        sidebar_layout.addLayout(context_header)
 
         self.upload_btn = QPushButton("+ Add Dataset")
         self.upload_btn.setObjectName("uploadBtn")
@@ -299,42 +377,32 @@ class MainWindow(QMainWindow):
         self.api_status_label.setObjectName("apiStatusLabel")
         self.api_status_label.setWordWrap(True)
 
-        sidebar_layout.addWidget(QLabel("CONTEXT DATA"))
         sidebar_layout.addWidget(self.upload_btn)
-        sidebar_layout.addWidget(self.dataset_list, stretch=3)
+        sidebar_layout.addWidget(self.dataset_list, stretch=1)
         sidebar_layout.addWidget(self.api_status_label)
 
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setObjectName("separator")
-        sidebar_layout.addWidget(sep)
-
-        self.log_output = QTextEdit()
-        self.log_output.setObjectName("logOutput")
-        self.log_output.setReadOnly(True)
-
-        sidebar_layout.addWidget(QLabel("SYSTEM LOGS"))
-        sidebar_layout.addWidget(self.log_output, stretch=2)
+        left_shell_layout.addWidget(navigation_rail)
+        left_shell_layout.addWidget(self.sidebar)
 
         # =========================================================================
         # Workspace (Page 1)
         # =========================================================================
 
-        workspace = QWidget()
-        workspace.setObjectName("workspace")
+        self.workspace = QWidget()
+        self.workspace.setObjectName("workspace")
 
-        workspace_layout = QVBoxLayout(workspace)
+        workspace_layout = QVBoxLayout(self.workspace)
         workspace_layout.setContentsMargins(0, 0, 0, 0)
         workspace_layout.setSpacing(0)
 
-        canvas_container = QWidget()
-        canvas_layout = QVBoxLayout(canvas_container)
-        canvas_layout.setContentsMargins(40, 28, 40, 20)
-        canvas_layout.setSpacing(14)
+        self.canvas_container = QWidget()
+        self.canvas_container.setObjectName("canvasContainer")
+        canvas_layout = QVBoxLayout(self.canvas_container)
+        canvas_layout.setContentsMargins(24, 16, 24, 18)
+        canvas_layout.setSpacing(10)
 
-        self.result_output = QTextEdit()
+        self.result_output = AnalysisResultPanel()
         self.result_output.setObjectName("resultOutput")
-        self.result_output.setReadOnly(True)
         self.result_output.setPlaceholderText(
             "The execution result will appear here first."
         )
@@ -366,6 +434,11 @@ class MainWindow(QMainWindow):
         code_header.addWidget(self.code_reset_btn)
 
         code_panel_layout.addLayout(code_header)
+        self.analysis_plan_label = QLabel()
+        self.analysis_plan_label.setObjectName("analysisPlanLabel")
+        self.analysis_plan_label.setWordWrap(True)
+        self.analysis_plan_label.setVisible(False)
+        code_panel_layout.addWidget(self.analysis_plan_label)
         code_panel_layout.addWidget(self.code_editor)
 
         self.analysis_tabs = QTabWidget()
@@ -381,23 +454,40 @@ class MainWindow(QMainWindow):
         self.canvas_stack.addWidget(self.analysis_tabs)       # index 0
         self.canvas_stack.addWidget(self.decision_panel)      # index 1
 
+        self.activity_strip = QFrame()
+        self.activity_strip.setObjectName("activityStrip")
+        activity_layout = QHBoxLayout(self.activity_strip)
+        activity_layout.setContentsMargins(12, 7, 12, 7)
+        activity_layout.setSpacing(10)
+        self.activity_label = QLabel("Working")
+        self.activity_label.setObjectName("activityLabel")
+        self.activity_progress = QProgressBar()
+        self.activity_progress.setObjectName("activityProgress")
+        self.activity_progress.setRange(0, 0)
+        self.activity_progress.setTextVisible(False)
+        self.activity_progress.setFixedHeight(4)
+        activity_layout.addWidget(self.activity_label)
+        activity_layout.addWidget(self.activity_progress, stretch=1)
+        self.activity_strip.setVisible(False)
+
+        canvas_layout.addWidget(self.activity_strip)
         canvas_layout.addWidget(self.canvas_stack)
 
         # =========================================================================
         # Command Bar
         # =========================================================================
 
-        command_bar = QFrame()
-        command_bar.setObjectName("commandBar")
+        self.command_bar = QFrame(self.workspace)
+        self.command_bar.setObjectName("commandBar")
         command_shadow = QGraphicsDropShadowEffect(self)
-        command_shadow.setBlurRadius(28)
-        command_shadow.setOffset(0, 8)
-        command_shadow.setColor(QColor(15, 23, 42, 30))
-        command_bar.setGraphicsEffect(command_shadow)
+        command_shadow.setBlurRadius(18)
+        command_shadow.setOffset(0, 5)
+        command_shadow.setColor(QColor(15, 23, 42, 24))
+        self.command_bar.setGraphicsEffect(command_shadow)
 
-        command_layout = QHBoxLayout(command_bar)
-        command_layout.setContentsMargins(16, 12, 16, 12)
-        command_layout.setSpacing(12)
+        command_layout = QHBoxLayout(self.command_bar)
+        command_layout.setContentsMargins(14, 9, 12, 9)
+        command_layout.setSpacing(10)
 
         command_stack = QVBoxLayout()
         command_stack.setContentsMargins(0, 0, 0, 0)
@@ -416,13 +506,18 @@ class MainWindow(QMainWindow):
         self.suggestion_btn.installEventFilter(self)
         suggestion_bar.addWidget(self.suggestion_btn)
         suggestion_bar.addStretch()
+        self.prompt_count_label = QLabel("0 characters")
+        self.prompt_count_label.setObjectName("promptCountLabel")
+        suggestion_bar.addWidget(self.prompt_count_label)
 
         self.prompt_input = QTextEdit()
         self.prompt_input.setObjectName("promptInput")
         self.prompt_input.setPlaceholderText(
             "Ask a question about your data or request an analysis..."
         )
-        self.prompt_input.setMaximumHeight(80)
+        self.prompt_input.setMinimumHeight(64)
+        self.prompt_input.setMaximumHeight(180)
+        self.prompt_input.textChanged.connect(self._on_prompt_text_changed)
         command_stack.addLayout(suggestion_bar)
         command_stack.addWidget(self.prompt_input)
 
@@ -448,14 +543,36 @@ class MainWindow(QMainWindow):
         command_layout.addWidget(self.run_btn)
         command_layout.addWidget(self.apply_btn)
 
-        workspace_layout.addWidget(canvas_container, stretch=1)
+        workspace_layout.addWidget(self.canvas_container, stretch=1)
 
-        command_wrapper = QWidget()
-        wrapper_layout = QVBoxLayout(command_wrapper)
-        wrapper_layout.setContentsMargins(40, 0, 40, 40)
-        wrapper_layout.addWidget(command_bar)
+        self.activity_drawer = QFrame()
+        self.activity_drawer.setObjectName("activityDrawer")
+        activity_drawer_layout = QVBoxLayout(self.activity_drawer)
+        activity_drawer_layout.setContentsMargins(0, 0, 0, 0)
+        activity_drawer_layout.setSpacing(0)
+        self.activity_toggle_btn = QPushButton("Activity")
+        self.activity_toggle_btn.setObjectName("activityToggleBtn")
+        self.activity_toggle_btn.setCursor(Qt.PointingHandCursor)
+        self.activity_toggle_btn.setFixedHeight(26)
+        self.activity_toggle_btn.clicked.connect(self._toggle_activity_drawer)
+        self.log_output = QTextEdit()
+        self.log_output.setObjectName("logOutput")
+        self.log_output.setReadOnly(True)
+        self.log_output.setMaximumHeight(150)
+        self.log_output.setVisible(False)
+        activity_drawer_layout.addWidget(self.activity_toggle_btn)
+        activity_drawer_layout.addWidget(self.log_output)
+        workspace_layout.addWidget(self.activity_drawer)
 
-        workspace_layout.addWidget(command_wrapper)
+        self.composer_status_btn = CircularStatusButton("↑", self.workspace)
+        self.composer_status_btn.setObjectName("composerStatusBtn")
+        self.composer_status_btn.setFixedSize(44, 44)
+        self.composer_status_btn.setToolTip("Continue analysis")
+        self.composer_status_btn.setVisible(False)
+        self.composer_status_btn.clicked.connect(self._toggle_composer_pin)
+        self.workspace.installEventFilter(self)
+        self.command_bar.installEventFilter(self)
+        self.composer_status_btn.installEventFilter(self)
 
         # =========================================================================
         # Page Stack & Splitter Assembly
@@ -464,15 +581,17 @@ class MainWindow(QMainWindow):
         self.page_container = QStackedWidget()
         self.history_page = HistoryPage()
 
-        self.page_container.addWidget(workspace)
+        self.page_container.addWidget(self.workspace)
         self.page_container.addWidget(self.history_page)
 
-        self.main_splitter.addWidget(sidebar)
+        self.main_splitter.addWidget(self.left_shell)
         self.main_splitter.addWidget(self.page_container)
         self.main_splitter.setCollapsible(0, False)
-        self.main_splitter.setSizes([260, 740])
+        self.main_splitter.setSizes([48, 952])
 
         self.history_btn.clicked.connect(self._show_history_page)
+        self.nav_analysis_btn.clicked.connect(self._show_analysis_context)
+        self.context_close_btn.clicked.connect(self._close_context_panel)
         self.history_page.btn_back.clicked.connect(lambda: self.page_container.setCurrentIndex(0))
         self.history_page.task_open_requested.connect(self._open_history_task)
         self.settings_btn.clicked.connect(self._on_settings_clicked)
@@ -482,6 +601,177 @@ class MainWindow(QMainWindow):
         self._refresh_api_status()
         self._refresh_overview_ui()
         self._show_start_page()
+        QTimer.singleShot(0, self._position_floating_composer)
+
+    def _make_nav_button(
+        self,
+        icon_role: QStyle.StandardPixmap,
+        tooltip: str,
+    ) -> QPushButton:
+        button = QPushButton()
+        button.setIcon(self.style().standardIcon(icon_role))
+        button.setIconSize(QSize(16, 16))
+        button.setObjectName("navigationRailButton")
+        button.setFixedSize(36, 36)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setToolTip(tooltip)
+        return button
+
+    def _show_analysis_context(self) -> None:
+        self.page_container.setCurrentIndex(0)
+        self._toggle_context_panel()
+
+    def _toggle_context_panel(self) -> None:
+        if self._context_panel_open:
+            self._close_context_panel()
+            return
+        self._context_panel_open = True
+        self.sidebar.setVisible(True)
+        self.left_shell.setFixedWidth(268)
+        self.main_splitter.setSizes([268, max(520, self.main_splitter.width() - 268)])
+        self.nav_analysis_btn.setProperty("active", True)
+        self.nav_analysis_btn.style().unpolish(self.nav_analysis_btn)
+        self.nav_analysis_btn.style().polish(self.nav_analysis_btn)
+
+    def _close_context_panel(self) -> None:
+        self._context_panel_open = False
+        self.sidebar.setVisible(False)
+        self.left_shell.setFixedWidth(48)
+        self.main_splitter.setSizes([48, max(520, self.main_splitter.width() - 48)])
+        self.nav_analysis_btn.setProperty("active", False)
+        self.nav_analysis_btn.style().unpolish(self.nav_analysis_btn)
+        self.nav_analysis_btn.style().polish(self.nav_analysis_btn)
+
+    def _toggle_activity_drawer(self) -> None:
+        expanded = not self.log_output.isVisible()
+        self.log_output.setVisible(expanded)
+        self.activity_toggle_btn.setText(
+            "Activity  ▾" if expanded else "Activity"
+        )
+        QTimer.singleShot(0, self._position_floating_composer)
+
+    def _expanded_composer_rect(self) -> QRect:
+        width = min(680, max(420, self.workspace.width() - 64))
+        height = max(96, min(122, self.command_bar.sizeHint().height()))
+        bottom_gap = self.activity_drawer.sizeHint().height() + 16
+        return QRect(
+            max(24, (self.workspace.width() - width) // 2),
+            max(18, self.workspace.height() - height - bottom_gap),
+            width,
+            height,
+        )
+
+    def _collapsed_composer_rect(self) -> QRect:
+        size = 44
+        bottom_gap = self.activity_drawer.sizeHint().height() + 16
+        return QRect(
+            self.workspace.width() - size - 24,
+            max(18, self.workspace.height() - size - bottom_gap),
+            size,
+            size,
+        )
+
+    def _position_floating_composer(self) -> None:
+        if not hasattr(self, "command_bar"):
+            return
+        if self._composer_animation is not None:
+            self._composer_animation.stop()
+        if self._composer_collapsed:
+            self.command_bar.hide()
+            self.composer_status_btn.setGeometry(self._collapsed_composer_rect())
+            self.composer_status_btn.show()
+            self.composer_status_btn.raise_()
+        else:
+            self.composer_status_btn.hide()
+            self.command_bar.show()
+            self.command_bar.setGeometry(self._expanded_composer_rect())
+            self.command_bar.raise_()
+
+    def _animate_composer(self, target: QRect, finished) -> None:
+        if self._composer_animation is not None:
+            self._composer_animation.stop()
+        animation = QPropertyAnimation(self.command_bar, b"geometry", self)
+        animation.setDuration(210)
+        animation.setEasingCurve(QEasingCurve.OutCubic)
+        animation.setStartValue(self.command_bar.geometry())
+        animation.setEndValue(target)
+        animation.finished.connect(finished)
+        self._composer_animation = animation
+        animation.start()
+
+    def _collapse_composer(self, state: str = "ready") -> None:
+        if self._composer_collapsed or self._composer_pinned:
+            self._set_composer_state(state)
+            return
+        self._composer_hide_timer.stop()
+        self._composer_collapsed = True
+        self._composer_hover_blocked = True
+        QTimer.singleShot(
+            420,
+            lambda: setattr(self, "_composer_hover_blocked", False),
+        )
+        self._set_composer_state(state)
+
+        def finish() -> None:
+            self.command_bar.hide()
+            self.composer_status_btn.setGeometry(self._collapsed_composer_rect())
+            self.composer_status_btn.show()
+            self.composer_status_btn.raise_()
+
+        self._animate_composer(self._collapsed_composer_rect(), finish)
+
+    def _expand_composer(self, pin: bool = False) -> None:
+        self._composer_hide_timer.stop()
+        if pin:
+            self._composer_pinned = True
+        if not self._composer_collapsed:
+            self.command_bar.raise_()
+            return
+        self._composer_collapsed = False
+        self.composer_status_btn.hide()
+        self.command_bar.setGeometry(self._collapsed_composer_rect())
+        self.command_bar.show()
+        self.command_bar.raise_()
+        self._animate_composer(self._expanded_composer_rect(), lambda: None)
+
+    def _toggle_composer_pin(self) -> None:
+        if self._composer_collapsed:
+            self._expand_composer(pin=True)
+        else:
+            self._composer_pinned = not self._composer_pinned
+            if not self._composer_pinned:
+                self._collapse_composer()
+
+    def _schedule_composer_collapse(self) -> None:
+        if not self._composer_pinned and not self.prompt_input.hasFocus():
+            self._composer_hide_timer.start()
+
+    def _maybe_collapse_composer(self) -> None:
+        if self._composer_pinned or self.prompt_input.hasFocus():
+            return
+        global_pos = QCursor.pos()
+        if (
+            self.command_bar.isVisible()
+            and self.command_bar.rect().contains(
+                self.command_bar.mapFromGlobal(global_pos)
+            )
+        ):
+            return
+        self._collapse_composer()
+
+    def _set_composer_state(self, state: str) -> None:
+        states = {
+            "busy": ("", "Analysis is running"),
+            "code": ("{}", "Code is ready for review"),
+            "done": ("✦", "Continue analysis"),
+            "error": ("!", "Analysis needs attention"),
+            "ready": ("↑", "Open analysis prompt"),
+        }
+        glyph, tooltip = states.get(state, states["ready"])
+        self.composer_status_btn.setBusy(state == "busy")
+        if glyph:
+            self.composer_status_btn.setGlyph(glyph)
+        self.composer_status_btn.setToolTip(tooltip)
 
     def _on_upload_clicked(self):
         """Handle file upload and display in sidebar"""
@@ -538,7 +828,23 @@ class MainWindow(QMainWindow):
             self._ensure_dataset_overview(current_name, force=False)
 
     def eventFilter(self, watched, event):
-        if watched is self.suggestion_btn:
+        workspace = getattr(self, "workspace", None)
+        composer_button = getattr(self, "composer_status_btn", None)
+        command_bar = getattr(self, "command_bar", None)
+        if watched is workspace and event.type() == QEvent.Resize:
+            QTimer.singleShot(0, self._position_floating_composer)
+        elif watched is composer_button:
+            if (
+                event.type() == QEvent.Enter
+                and not self._composer_hover_blocked
+            ):
+                self._expand_composer(pin=False)
+        elif watched is command_bar:
+            if event.type() == QEvent.Enter:
+                self._composer_hide_timer.stop()
+            elif event.type() == QEvent.Leave:
+                self._schedule_composer_collapse()
+        elif watched is self.suggestion_btn:
             if event.type() == QEvent.Enter:
                 self._show_suggestion_popover()
             elif event.type() == QEvent.Leave:
@@ -571,9 +877,63 @@ class MainWindow(QMainWindow):
         row_widget = DatasetRowWidget(dataset_name, self.dataset_list)
         row_widget.activated.connect(self._select_dataset_by_name)
         row_widget.overview_requested.connect(self._show_overview_for_dataset)
+        row_widget.delete_requested.connect(self._remove_dataset)
         self.dataset_list.setItemWidget(item, row_widget)
         self._dataset_row_widgets[dataset_name] = row_widget
         self._sync_dataset_row_selection(self._current_dataset_name())
+
+    def _remove_dataset(self, dataset_name: str) -> None:
+        item = self._find_dataset_item(dataset_name)
+        if item is None or dataset_name not in self.loaded_files:
+            return
+
+        removed_meta = self.loaded_files.pop(dataset_name)
+        self._dataset_overviews.pop(dataset_name, None)
+        row_widget = self._dataset_row_widgets.pop(dataset_name, None)
+
+        if (
+            self._overview_loading_dataset == dataset_name
+            and self._overview_loading_meta is removed_meta
+            and self._overview_worker is not None
+        ):
+            self._overview_worker.cancel()
+
+        row = self.dataset_list.row(item)
+        self.dataset_list.takeItem(row)
+        if row_widget is not None:
+            row_widget.deleteLater()
+
+        if self._pending_files_meta:
+            self._pending_files_meta = [
+                meta
+                for meta in self._pending_files_meta
+                if meta.file_path != removed_meta.file_path
+            ] or None
+            if self._pending_files_meta is None:
+                self._pending_query = None
+                self._generated_code = ""
+                self._analysis_plan = {}
+                self._current_analysis_result = None
+                self._verified_code = ""
+                self._verified_execution = None
+                self._render_analysis_plan()
+                self.code_editor.clear()
+                self._set_python_tab_visible(False)
+                self._show_analyze_action()
+
+        self.overview_popover.hide()
+        self._hide_suggestion_popover()
+
+        if self.dataset_list.count():
+            next_row = min(row, self.dataset_list.count() - 1)
+            self.dataset_list.setCurrentRow(next_row)
+        else:
+            self.dataset_list.setCurrentRow(-1)
+            self.result_output.setPlainText("Please import a dataset first.")
+
+        self._sync_dataset_row_selection(self._current_dataset_name())
+        self._refresh_overview_ui()
+        self.log_output.append(f"Removed dataset: {dataset_name}")
 
     def _select_dataset_by_name(self, dataset_name: str) -> None:
         item = self._find_dataset_item(dataset_name)
@@ -624,7 +984,10 @@ class MainWindow(QMainWindow):
             return
 
         if self._overview_thread is not None:
-            if self._overview_loading_dataset == dataset_name:
+            if (
+                self._overview_loading_dataset == dataset_name
+                and self._overview_loading_meta is file_meta
+            ):
                 return
             self._dataset_overviews[dataset_name] = {"state": "queued"}
             self._refresh_overview_ui(dataset_name)
@@ -670,6 +1033,7 @@ class MainWindow(QMainWindow):
         self._overview_thread = thread
         self._overview_worker = worker
         self._overview_loading_dataset = dataset_name
+        self._overview_loading_meta = file_meta
         thread.start()
 
     def _on_overview_event(self, event: dict) -> None:
@@ -679,38 +1043,42 @@ class MainWindow(QMainWindow):
 
     def _on_overview_finished(self, result) -> None:
         dataset_name = self._overview_loading_dataset
-        if dataset_name is not None:
+        current_meta = self.loaded_files.get(dataset_name) if dataset_name else None
+        if (
+            dataset_name is not None
+            and current_meta is self._overview_loading_meta
+        ):
             data = result.overview_result or {}
             self._dataset_overviews[dataset_name] = {
-                "state": "ready",
-                "data": data,
+                "state": "ready" if result.success and data else "error",
+                "data": data if result.success else {},
                 "error": result.error,
             }
             if result.error:
-                self.log_output.append(f"Overview fallback used: {result.error}")
+                self.log_output.append(f"Overview detail: {result.error}")
         self._refresh_overview_ui(dataset_name)
 
     def _on_overview_error(self, error: str) -> None:
         dataset_name = self._overview_loading_dataset
-        if dataset_name is not None:
-            file_meta = self.loaded_files.get(dataset_name)
-            fallback = {}
-            if file_meta is not None:
-                from dify.workflow import AnalysisWorkflow
-
-                fallback = AnalysisWorkflow._fallback_overview(file_meta)
+        current_meta = self.loaded_files.get(dataset_name) if dataset_name else None
+        if (
+            dataset_name is not None
+            and current_meta is self._overview_loading_meta
+        ):
             self._dataset_overviews[dataset_name] = {
-                "state": "ready" if fallback else "error",
-                "data": fallback,
+                "state": "error",
+                "data": {},
                 "error": error,
             }
-        self.log_output.append(f"Overview detail: {error}")
+        if current_meta is self._overview_loading_meta:
+            self.log_output.append(f"Overview detail: {error}")
         self._refresh_overview_ui(dataset_name)
 
     def _cleanup_overview_worker(self) -> None:
         self._overview_thread = None
         self._overview_worker = None
         self._overview_loading_dataset = None
+        self._overview_loading_meta = None
         self._refresh_overview_ui()
         for queued_name, queued_state in self._dataset_overviews.items():
             if (queued_state or {}).get("state") == "queued":
@@ -750,8 +1118,7 @@ class MainWindow(QMainWindow):
                 continue
 
             if state == "error":
-                row_widget.overview_button.setBusy(False)
-                row_widget.overview_button.setVisible(False)
+                row_widget.setRetry("Retry dataset overview")
                 continue
 
             row_widget.overview_button.setBusy(False)
@@ -782,6 +1149,15 @@ class MainWindow(QMainWindow):
         self.prompt_input.setPlainText(suggestion)
         self.prompt_input.setFocus()
         self._hide_suggestion_popover()
+
+    def _on_prompt_text_changed(self) -> None:
+        length = len(self.prompt_input.toPlainText())
+        self.prompt_count_label.setText(
+            f"{length:,} character" if length == 1 else f"{length:,} characters"
+        )
+        document_height = self.prompt_input.document().size().height()
+        target_height = max(64, min(180, int(document_height) + 18))
+        self.prompt_input.setFixedHeight(target_height)
 
     def _show_suggestion_popover(self) -> None:
         if not self._suggestion_buttons or not self.suggestion_btn.isVisible():
@@ -833,10 +1209,10 @@ class MainWindow(QMainWindow):
         dimension = text_cols[0] if text_cols else "the main category"
 
         suggestions = [
-            f"Give me a quick summary of the main patterns in {metric}.",
-            f"Compare {metric} across {dimension}.",
-            "Check missing values and unusual records in this dataset.",
-            "Tell me the most important insights in this file.",
+            f"概括 {metric} 的主要分布和变化特征。",
+            f"比较不同 {dimension} 下的 {metric}。",
+            "检查数据中的缺失值和异常记录。",
+            "总结这个数据集中最重要的发现。",
         ]
         return suggestions
 
@@ -872,17 +1248,26 @@ class MainWindow(QMainWindow):
             return
 
         self._generated_code = ""
+        self._analysis_plan = {}
+        self._current_analysis_result = None
+        self._verified_code = ""
+        self._verified_execution = None
+        self._render_analysis_plan()
         self.code_editor.clear()
         self._set_python_tab_visible(False)
         self._show_analyze_action()
         self._pending_query = query
-        self._pending_files_meta = [file_meta]
-        self._create_history_task(file_name, query)
+        self._pending_files_meta = list(self.loaded_files.values())
+        dataset_label = ", ".join(self.loaded_files.keys())
+        self._create_history_task(dataset_label or file_name, query)
         self.log_output.append(
             f"Using mode: {self._current_model_label()}"
         )
         self.log_output.append("Generating Python code...")
         self.result_output.setText("Waiting for analysis result.")
+        self._composer_pinned = False
+        self._collapse_composer("busy")
+        self._close_context_panel()
         self._run_generate()
 
     def _on_decision_made(self, option: OptionItem) -> None:
@@ -916,6 +1301,7 @@ class MainWindow(QMainWindow):
     def _start_new_task(self) -> None:
         if self._analysis_thread is not None:
             return
+        self._stop_overview_worker()
 
         active_task = self._find_history_task(self._active_task_id)
         if active_task and not active_task.get("finished"):
@@ -936,6 +1322,11 @@ class MainWindow(QMainWindow):
         self._pending_files_meta = None
         self._pending_query = None
         self._generated_code = ""
+        self._analysis_plan = {}
+        self._current_analysis_result = None
+        self._verified_code = ""
+        self._verified_execution = None
+        self._render_analysis_plan()
         self._active_worker_mode = ""
         self._active_task_id = None
         self._reset_transcript()
@@ -948,6 +1339,33 @@ class MainWindow(QMainWindow):
         self._set_task_title()
         self.log_output.append("New task started.")
         self.result_output.setText("Import a dataset, then ask an analysis question.")
+        self._composer_collapsed = False
+        self._composer_pinned = True
+        self.command_bar.show()
+        self.composer_status_btn.hide()
+        self._close_context_panel()
+        self._toggle_context_panel()
+        QTimer.singleShot(0, self._position_floating_composer)
+
+    def _stop_overview_worker(self) -> None:
+        worker = self._overview_worker
+        thread = self._overview_thread
+        if worker is not None:
+            worker.cancel()
+        if thread is not None and thread.isRunning():
+            thread.quit()
+            thread.wait(3000)
+
+    def closeEvent(self, event) -> None:
+        if self._analysis_worker is not None:
+            self._analysis_worker.cancel()
+        if self._analysis_thread is not None and self._analysis_thread.isRunning():
+            self._analysis_thread.quit()
+            self._analysis_thread.wait(3000)
+        self._stop_overview_worker()
+        self.overview_popover.hide()
+        self._hide_suggestion_popover()
+        super().closeEvent(event)
 
     def _close_task(self) -> None:
         if self._analysis_thread is not None:
@@ -1000,6 +1418,8 @@ class MainWindow(QMainWindow):
             "finished": False,
             "files_meta": files_meta,
             "generated_code": "",
+            "analysis_plan": {},
+            "analysis_result": {},
             "code": "",
             "result": "Waiting for analysis result.",
             "error": "",
@@ -1063,11 +1483,22 @@ class MainWindow(QMainWindow):
         self._pending_files_meta = files_meta or None
         self._pending_query = task.get("query", "")
         self._generated_code = task.get("generated_code") or code
+        self._analysis_plan = task.get("analysis_plan") or {}
+        result_payload = task.get("analysis_result") or {}
+        self._current_analysis_result = (
+            AnalysisResult.from_dict(result_payload)
+            if result_payload
+            else None
+        )
         self._active_worker_mode = ""
         self._reset_transcript()
         self.prompt_input.setPlainText(task.get("query", ""))
         self.code_editor.setPlainText(code)
-        self.result_output.setPlainText(result)
+        if self._current_analysis_result is not None:
+            self.result_output.set_result(self._current_analysis_result)
+        else:
+            self.result_output.setPlainText(result)
+        self._render_analysis_plan()
         self.log_output.clear()
         self.log_output.append(f"Session reopened: Task #{task_id}")
         if error:
@@ -1131,14 +1562,14 @@ class MainWindow(QMainWindow):
             return f"DevOps · {settings.GEMINI_MODEL}"
 
     def _run_generate(self):
-        """生成代码并展示到可编辑区域，等待用户点击 Apply 后再执行。"""
+        """Generate, preflight, and repair code before presenting it."""
         if not self._pending_query or not self._pending_files_meta:
             return
 
         self._reset_transcript()
-        self._append_system_event("Generating code...")
+        self._append_system_event("Generating and validating code...")
         self._start_analysis_worker(
-            mode="generate",
+            mode="prepare",
             files_meta=self._pending_files_meta,
             user_query=self._pending_query,
         )
@@ -1166,6 +1597,17 @@ class MainWindow(QMainWindow):
             self.result_output.setText("No Python code is available to execute yet.")
             return
 
+        if (
+            code == self._verified_code
+            and self._verified_execution is not None
+            and self._verified_execution.success
+        ):
+            self.log_output.append("Using locally validated analysis result.")
+            cached_execution = self._verified_execution
+            self._verified_execution = None
+            self._present_execution_result(code, cached_execution)
+            return
+
         self._append_system_event("Executing approved code...")
         self.apply_btn.setText("Running")
         self.apply_btn.setEnabled(False)
@@ -1179,7 +1621,9 @@ class MainWindow(QMainWindow):
         self._start_analysis_worker(
             mode="execute",
             files_meta=self._pending_files_meta,
+            user_query=self._pending_query or "",
             code=code,
+            analysis_plan=self._analysis_plan,
         )
 
     def _start_analysis_worker(
@@ -1188,6 +1632,7 @@ class MainWindow(QMainWindow):
         files_meta: list,
         user_query: str = "",
         code: str = "",
+        analysis_plan: dict | None = None,
     ) -> None:
         if self._analysis_thread is not None:
             return
@@ -1201,6 +1646,7 @@ class MainWindow(QMainWindow):
             files_meta=files_meta,
             user_query=user_query,
             code=code,
+            analysis_plan=analysis_plan,
         )
         worker.moveToThread(thread)
 
@@ -1226,6 +1672,7 @@ class MainWindow(QMainWindow):
 
         if message and event_type == "status":
             self.log_output.append(message)
+            self._set_activity_message(message)
         elif event_type == "thinking_delta":
             self._transcript["thinking"] += delta
         elif event_type == "content_delta":
@@ -1245,68 +1692,110 @@ class MainWindow(QMainWindow):
         self._render_transcript()
 
     def _on_worker_finished(self, result) -> None:
-        if self._active_worker_mode == "generate":
+        if self._active_worker_mode in {"prepare", "generate"}:
             if result.success:
                 self._generated_code = result.code
+                self._analysis_plan = result.analysis_plan or {}
+                self._verified_code = result.code
+                self._verified_execution = result.execution
+                self._render_analysis_plan()
                 self.code_editor.setPlainText(result.code)
                 self.code_editor.document().setModified(False)
-                self._append_system_event("Code generated. Review and edit it before Apply.")
-                self.log_output.append("Code generated and ready for review.")
+                if result.retries_used:
+                    self.log_output.append(
+                        f"Code was automatically corrected {result.retries_used} time(s)."
+                    )
+                self._append_system_event(
+                    "Code generated and validated. Review it before Apply."
+                )
+                self.log_output.append("Code passed local validation and is ready.")
                 self._transcript["execution"] = (
-                    "Python code is ready. Review it in the Python tab, then click Apply."
+                    "Python code passed local validation. Review it, then click Apply."
                 )
                 self._set_python_tab_visible(True)
-                self.analysis_tabs.setCurrentIndex(1)
+                self.analysis_tabs.setCurrentIndex(0)
                 self._show_apply_action()
+                self._set_composer_state("code")
                 self._update_history_task(
                     "Awaiting Apply",
                     generated_code=result.code,
                     code=result.code,
-                    result="Python code is ready. Review it in the Python tab, then click Apply.",
+                    analysis_plan=self._analysis_plan,
+                    result="Python code passed local validation and is ready for Apply.",
                     error="",
                 )
             else:
-                self._append_system_event(f"Generation failed: {result.error}")
-                self.log_output.append(f"Generation failed: {result.error}")
-                self._transcript["execution"] = (
-                    "Code generation failed. Check settings and try Analyze again."
-                )
-                self._pending_query = None
-                self._pending_files_meta = None
-                self._set_python_tab_visible(False)
-                self._show_analyze_action()
-                self._update_history_task(
-                    "Failed",
-                    result.error,
-                    finished=True,
-                    result="Code generation failed. Check settings and try Analyze again.",
-                    error=result.error,
-                )
+                self._verified_code = ""
+                self._verified_execution = None
+                self._set_composer_state("error")
+                self._append_system_event(f"Code preparation failed: {result.error}")
+                self.log_output.append(f"Code preparation failed: {result.error}")
+                if result.code:
+                    self._generated_code = result.code
+                    self._analysis_plan = result.analysis_plan or {}
+                    self.code_editor.setPlainText(result.code)
+                    self._render_analysis_plan()
+                    self._transcript["execution"] = (
+                        "Automatic correction could not produce runnable code. "
+                        "Review the Python code or click Apply Again to retry."
+                    )
+                    self._set_python_tab_visible(True)
+                    self.analysis_tabs.setCurrentIndex(1)
+                    self._show_apply_action(retry=True)
+                    self._update_history_task(
+                        "Needs correction",
+                        result.error,
+                        finished=False,
+                        generated_code=result.code,
+                        code=result.code,
+                        analysis_plan=self._analysis_plan,
+                        result=self._transcript["execution"],
+                        error=result.error,
+                    )
+                else:
+                    self._transcript["execution"] = (
+                        "Code generation failed. Check settings and try Analyze again."
+                    )
+                    self._pending_query = None
+                    self._pending_files_meta = None
+                    self._set_python_tab_visible(False)
+                    self._show_analyze_action()
+                    self._update_history_task(
+                        "Failed",
+                        result.error,
+                        finished=True,
+                        result=(
+                            "Code generation failed. Check settings and try Analyze again."
+                        ),
+                        error=result.error,
+                    )
 
         elif self._active_worker_mode == "execute":
             if result.success:
-                output_text = result.execution.stdout if result.execution else ""
-                self._append_system_event("Execution completed")
-                self.log_output.append("Execution completed.")
-                self._transcript["execution"] = output_text or "Execution completed with no stdout."
-                self._set_python_tab_visible(True)
-                self._update_history_task(
-                    "Completed",
-                    finished=True,
-                    code=self.code_editor.toPlainText().strip(),
-                    result=self._transcript["execution"],
-                    error="",
-                )
-                self.analysis_tabs.setCurrentIndex(0)
-                self._show_apply_action(retry=True)
+                if result.code != self.code_editor.toPlainText().strip():
+                    self.log_output.append(
+                        f"Edited code was automatically corrected "
+                        f"{result.retries_used} time(s)."
+                    )
+                    self.code_editor.setPlainText(result.code)
+                    self._generated_code = result.code
+                self._verified_code = result.code
+                self._verified_execution = None
+                self._present_execution_result(result.code, result.execution)
             else:
+                self._verified_code = ""
+                self._verified_execution = None
+                self._set_composer_state("error")
+                if result.code and result.code != self.code_editor.toPlainText().strip():
+                    self.code_editor.setPlainText(result.code)
+                    self._generated_code = result.code
                 error_text = (
                     result.execution.stderr if result.execution else result.error
                 )
                 self._append_system_event("Execution failed")
                 self.log_output.append(f"Execution detail: {error_text}")
                 self._transcript["execution"] = (
-                    "The Python code could not be executed.\n"
+                    "The Python code could not be executed after automatic correction.\n"
                     "Review or reset the code, then click Apply Again."
                 )
                 self._set_python_tab_visible(True)
@@ -1323,9 +1812,38 @@ class MainWindow(QMainWindow):
         self._render_transcript()
         self._set_busy(False)
 
+    def _present_execution_result(self, code: str, execution) -> None:
+        output_text = execution.stdout if execution else ""
+        analysis_result = (
+            execution.analysis_result
+            if execution
+            else AnalysisResult(summary=output_text, raw_output=output_text)
+        )
+        self._current_analysis_result = analysis_result
+        self._append_system_event("Execution completed")
+        self.log_output.append("Execution completed.")
+        self._transcript["execution"] = (
+            output_text or "Execution completed with no stdout."
+        )
+        self.result_output.set_result(analysis_result)
+        self._set_python_tab_visible(True)
+        self._update_history_task(
+            "Completed",
+            finished=True,
+            code=code,
+            generated_code=self._generated_code or code,
+            result=self._transcript["execution"],
+            analysis_result=analysis_result.to_dict(),
+            error="",
+        )
+        self.analysis_tabs.setCurrentIndex(0)
+        self._show_apply_action(retry=True)
+        self._set_composer_state("done")
+
     def _on_worker_error(self, error: str) -> None:
         self._append_system_event(f"Worker error: {error}")
         self.log_output.append(f"Worker detail: {error}")
+        self._set_composer_state("error")
         if self._active_worker_mode == "execute":
             self._transcript["execution"] = (
                 "The Python code could not be executed.\n"
@@ -1375,9 +1893,23 @@ class MainWindow(QMainWindow):
         if busy:
             self.run_btn.setText("Working")
             self.apply_btn.setEnabled(False)
+            self._set_composer_state("busy")
+            if not self.activity_label.text():
+                self.activity_label.setText("Working")
+            self.activity_strip.setVisible(True)
         else:
             self.run_btn.setText("Analyze")
             self.apply_btn.setEnabled(True)
+            self.activity_strip.setVisible(False)
+
+    def _set_activity_message(self, message: str) -> None:
+        if not message:
+            return
+        self.activity_label.setText(message)
+        compact = message if len(message) <= 72 else message[:69] + "..."
+        self.activity_toggle_btn.setText(f"Activity · {compact}")
+        if self._analysis_thread is not None:
+            self.activity_strip.setVisible(True)
 
     def _reset_transcript(self) -> None:
         self._transcript = {
@@ -1397,9 +1929,54 @@ class MainWindow(QMainWindow):
     def _render_transcript(self) -> None:
         if not self._transcript:
             return
+        if self._current_analysis_result is not None:
+            self.result_output.set_result(self._current_analysis_result)
+            return
         execution_text = self._transcript["execution"].strip()
         if execution_text:
             self.result_output.setPlainText(execution_text)
+
+    def _render_analysis_plan(self) -> None:
+        plan = self._analysis_plan or {}
+        requirements = plan.get("requirements") or []
+        warnings = [
+            str(item).strip()
+            for item in (plan.get("warnings") or [])
+            if str(item).strip()
+        ]
+        summary = str(
+            plan.get("task_summary") or plan.get("summary") or ""
+        ).strip()
+        objectives = []
+        for requirement in requirements:
+            if isinstance(requirement, dict):
+                objective = str(
+                    requirement.get("objective")
+                    or requirement.get("description")
+                    or ""
+                ).strip()
+            else:
+                objective = str(requirement).strip()
+            if objective:
+                objectives.append(objective)
+
+        parts = []
+        if summary:
+            parts.append(summary)
+        if objectives:
+            visible = objectives[:4]
+            parts.append(" · ".join(visible))
+            if len(objectives) > len(visible):
+                parts.append(f"+{len(objectives) - len(visible)} more")
+        if warnings:
+            parts.append("Attention: " + " · ".join(warnings[:2]))
+            if len(warnings) > 2:
+                parts.append(f"+{len(warnings) - 2} warnings")
+
+        self.analysis_plan_label.setText(
+            "Plan  " + "  |  ".join(parts) if parts else ""
+        )
+        self.analysis_plan_label.setVisible(bool(parts))
 
     def _dataset_display_name(self, file_path: str) -> str:
         from pathlib import Path
@@ -1557,10 +2134,61 @@ class MainWindow(QMainWindow):
             /* Sidebar */
             /* ========================================================================= */
 
+            QWidget#leftShell {
+                background-color: #F8F9FA;
+                border-right: 1px solid #E5E7EB;
+            }
+
+            QFrame#navigationRail {
+                background-color: #F3F4F6;
+                border-right: 1px solid #E5E7EB;
+            }
+
+            QPushButton#navigationRailButton {
+                background-color: transparent;
+                color: #5F6368;
+                border: 1px solid transparent;
+                border-radius: 7px;
+                font-size: 11px;
+                font-weight: 700;
+                padding: 0;
+            }
+
+            QPushButton#navigationRailButton:hover,
+            QPushButton#navigationRailButton[active="true"] {
+                background-color: #E8F0FE;
+                border-color: #D2E3FC;
+                color: #1A73E8;
+            }
+
+            QPushButton#navigationRailButton:disabled {
+                color: #BDC1C6;
+                background-color: transparent;
+            }
+
             QWidget#sidebar {
                 background-color: #F8F9FA;
                 border-right: 1px solid #E8EAED;
-                border-bottom-left-radius: 7px;
+            }
+
+            QLabel#contextPanelTitle {
+                color: #5F6368;
+                font-size: 10px;
+                font-weight: 700;
+            }
+
+            QPushButton#contextCloseBtn {
+                color: #5F6368;
+                background: transparent;
+                border: none;
+                border-radius: 5px;
+                font-size: 15px;
+                padding: 0;
+            }
+
+            QPushButton#contextCloseBtn:hover {
+                background-color: #E8EAED;
+                color: #202124;
             }
 
             QWidget#workspace {
@@ -1686,11 +2314,33 @@ class MainWindow(QMainWindow):
             /* Logs */
 
             QTextEdit#logOutput {
-                background-color: transparent;
+                background-color: #F8F9FA;
                 border: none;
+                border-top: 1px solid #E5E7EB;
                 font-family: "Courier New";
                 font-size: 11px;
-                color: #9CA3AF;
+                color: #6B7280;
+                padding: 8px 14px;
+            }
+
+            QFrame#activityDrawer {
+                background-color: #F8F9FA;
+                border-top: 1px solid #E5E7EB;
+            }
+
+            QPushButton#activityToggleBtn {
+                background-color: transparent;
+                color: #5F6368;
+                border: none;
+                text-align: left;
+                padding: 0 12px;
+                font-size: 10px;
+                font-weight: 600;
+            }
+
+            QPushButton#activityToggleBtn:hover {
+                background-color: #F1F3F4;
+                color: #202124;
             }
 
             QFrame#separator {
@@ -1705,6 +2355,29 @@ class MainWindow(QMainWindow):
                 font-size: 15px;
                 line-height: 1.6;
                 color: #111827;
+            }
+
+            QFrame#activityStrip {
+                background-color: #F8FAFD;
+                border: 1px solid #E3E8F0;
+                border-radius: 7px;
+            }
+
+            QLabel#activityLabel {
+                color: #3C4043;
+                font-size: 11px;
+                font-weight: 600;
+            }
+
+            QProgressBar#activityProgress {
+                background-color: #E8EAED;
+                border: none;
+                border-radius: 2px;
+            }
+
+            QProgressBar#activityProgress::chunk {
+                background-color: #1A73E8;
+                border-radius: 2px;
             }
 
             QPushButton#suggestionTriggerBtn {
@@ -1728,6 +2401,16 @@ class MainWindow(QMainWindow):
                 color: #374151;
                 font-size: 12px;
                 letter-spacing: 0;
+            }
+
+            QLabel#analysisPlanLabel {
+                color: #4B5563;
+                background-color: #F8F9FA;
+                border: 1px solid #E5E7EB;
+                border-radius: 6px;
+                padding: 8px 10px;
+                font-size: 11px;
+                font-weight: 500;
             }
 
             QPushButton#codeResetBtn {
@@ -1788,9 +2471,9 @@ class MainWindow(QMainWindow):
             /* ========================================================================= */
 
             QFrame#commandBar {
-                background-color: rgba(255, 255, 255, 0.9);
-                border: 1px solid #E5E7EB;
-                border-radius: 16px;
+                background-color: rgba(255, 255, 255, 248);
+                border: 1px solid #DADCE0;
+                border-radius: 9px;
             }
 
             QTextEdit#promptInput {
@@ -1799,6 +2482,12 @@ class MainWindow(QMainWindow):
                 font-size: 14px;
                 color: #111827;
                 padding: 4px;
+            }
+
+            QLabel#promptCountLabel {
+                color: #9AA0A6;
+                font-size: 10px;
+                font-weight: 500;
             }
 
             QPushButton#runBtn {
@@ -1834,7 +2523,7 @@ class MainWindow(QMainWindow):
             QPushButton#applyBtn:pressed {
                 background-color: #185ABC;
             }
-        """ + DECISION_PANEL_STYLE)
+        """ + DECISION_PANEL_STYLE + RESULT_PANEL_STYLE)
 
 
 if __name__ == "__main__":

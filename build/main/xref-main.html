@@ -30,6 +30,7 @@ imports:
  &#8226;   <a href="#config.runtime_paths">config.runtime_paths</a>
  &#8226;   <a href="#config.settings">config.settings</a>
  &#8226;   <a href="#copyreg">copyreg</a>
+ &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#dify.client">dify.client</a>
  &#8226;   <a href="#dify.workflow">dify.workflow</a>
  &#8226;   <a href="#encodings">encodings</a>
@@ -200,6 +201,7 @@ imports:
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
  &#8226;   <a href="#warnings">warnings</a>
  &#8226;   <a href="#weakref">weakref</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
 
   </div>
 
@@ -3439,8 +3441,11 @@ imported by:
  &#8226;   <a href="#matplotlib.backends.qt_compat">matplotlib.backends.qt_compat</a>
  &#8226;   <a href="#ui.api_settings_dialog">ui.api_settings_dialog</a>
  &#8226;   <a href="#ui.decision_panel">ui.decision_panel</a>
+ &#8226;   <a href="#ui.floating_controls">ui.floating_controls</a>
  &#8226;   <a href="#ui.history_page">ui.history_page</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#ui.overview_popover">ui.overview_popover</a>
+ &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
  &#8226;   <a href="#workers.analysis_worker">workers.analysis_worker</a>
 
   </div>
@@ -3467,8 +3472,10 @@ imported by:
     <a href="#PySide6.QtGui">PySide6.QtGui</a>
  &#8226;   <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
  &#8226;   <a href="#matplotlib.backends.qt_compat">matplotlib.backends.qt_compat</a>
+ &#8226;   <a href="#ui.floating_controls">ui.floating_controls</a>
  &#8226;   <a href="#ui.history_page">ui.history_page</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
 
   </div>
 
@@ -3521,8 +3528,11 @@ imported by:
  &#8226;   <a href="#matplotlib.backends.qt_compat">matplotlib.backends.qt_compat</a>
  &#8226;   <a href="#ui.api_settings_dialog">ui.api_settings_dialog</a>
  &#8226;   <a href="#ui.decision_panel">ui.decision_panel</a>
+ &#8226;   <a href="#ui.floating_controls">ui.floating_controls</a>
  &#8226;   <a href="#ui.history_page">ui.history_page</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#ui.overview_popover">ui.overview_popover</a>
+ &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
 
   </div>
 
@@ -3738,6 +3748,7 @@ imported by:
  &#8226;   <a href="#contourpy.enum_util">contourpy.enum_util</a>
  &#8226;   <a href="#contourpy.typecheck">contourpy.typecheck</a>
  &#8226;   <a href="#contourpy.types">contourpy.types</a>
+ &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#core.code_validator">core.code_validator</a>
  &#8226;   <a href="#core.executor">core.executor</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
@@ -3793,6 +3804,7 @@ imported by:
  &#8226;   <a href="#httpx._urlparse">httpx._urlparse</a>
  &#8226;   <a href="#httpx._urls">httpx._urls</a>
  &#8226;   <a href="#httpx._utils">httpx._utils</a>
+ &#8226;   <a href="#llm.cancellation">llm.cancellation</a>
  &#8226;   <a href="#llm.gemini_client">llm.gemini_client</a>
  &#8226;   <a href="#main.py">main.py</a>
  &#8226;   <a href="#matplotlib._mathtext">matplotlib._mathtext</a>
@@ -4134,7 +4146,17 @@ imported by:
  &#8226;   <a href="#tomllib._re">tomllib._re</a>
  &#8226;   <a href="#ui.api_settings_dialog">ui.api_settings_dialog</a>
  &#8226;   <a href="#ui.decision_panel">ui.decision_panel</a>
+ &#8226;   <a href="#ui.floating_controls">ui.floating_controls</a>
+ &#8226;   <a href="#ui.overview_popover">ui.overview_popover</a>
+ &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
  &#8226;   <a href="#workers.analysis_worker">workers.analysis_worker</a>
+ &#8226;   <a href="#xlrd.biffh">xlrd.biffh</a>
+ &#8226;   <a href="#xlrd.book">xlrd.book</a>
+ &#8226;   <a href="#xlrd.compdoc">xlrd.compdoc</a>
+ &#8226;   <a href="#xlrd.formatting">xlrd.formatting</a>
+ &#8226;   <a href="#xlrd.formula">xlrd.formula</a>
+ &#8226;   <a href="#xlrd.sheet">xlrd.sheet</a>
+ &#8226;   <a href="#xlrd.timemachine">xlrd.timemachine</a>
 
   </div>
 
@@ -9139,6 +9161,8 @@ imported by:
  &#8226;   <a href="#multiprocessing.reduction">multiprocessing.reduction</a>
  &#8226;   <a href="#openpyxl.styles.cell_style">openpyxl.styles.cell_style</a>
  &#8226;   <a href="#socket">socket</a>
+ &#8226;   <a href="#xlrd.compdoc">xlrd.compdoc</a>
+ &#8226;   <a href="#xlrd.sheet">xlrd.sheet</a>
 
   </div>
 
@@ -10197,6 +10221,7 @@ imports:
   <div class="import">
 imported by:
     <a href="#PIL.ImageFont">PIL.ImageFont</a>
+ &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#email._encoded_words">email._encoded_words</a>
  &#8226;   <a href="#email.base64mime">email.base64mime</a>
  &#8226;   <a href="#email.encoders">email.encoders</a>
@@ -10212,6 +10237,7 @@ imported by:
  &#8226;   <a href="#setuptools._vendor.wheel.wheelfile">setuptools._vendor.wheel.wheelfile</a>
  &#8226;   <a href="#shiboken6">shiboken6</a>
  &#8226;   <a href="#ssl">ssl</a>
+ &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
  &#8226;   <a href="#urllib.request">urllib.request</a>
  &#8226;   <a href="#xmlrpc.client">xmlrpc.client</a>
 
@@ -10402,6 +10428,17 @@ imported by:
  &#8226;   <a href="#shutil">shutil</a>
  &#8226;   <a href="#tarfile">tarfile</a>
  &#8226;   <a href="#zipfile">zipfile</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="cStringIO"></a>
+  <a target="code" href="" type="text/plain"><tt>cStringIO</tt></a>
+<span class="moduletype">MissingModule</span>  <div class="import">
+imported by:
+    <a href="#xlrd.timemachine">xlrd.timemachine</a>
 
   </div>
 
@@ -12077,6 +12114,7 @@ imported by:
  &#8226;   <a href="#tarfile">tarfile</a>
  &#8226;   <a href="#weakref">weakref</a>
  &#8226;   <a href="#webbrowser">webbrowser</a>
+ &#8226;   <a href="#xlrd.formula">xlrd.formula</a>
  &#8226;   <a href="#xml.dom.xmlbuilder">xml.dom.xmlbuilder</a>
  &#8226;   <a href="#xml.etree.ElementInclude">xml.etree.ElementInclude</a>
 
@@ -12122,11 +12160,40 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#core.code_validator">core.code_validator</a>
+    <a href="#core.analysis_result">core.analysis_result</a>
+ &#8226;   <a href="#core.code_validator">core.code_validator</a>
  &#8226;   <a href="#core.executor">core.executor</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#core.prompt_builder">core.prompt_builder</a>
  &#8226;   <a href="#core.session_manager">core.session_manager</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="core.analysis_result"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/core/analysis_result.py" type="text/plain"><tt>core.analysis_result</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#base64">base64</a>
+ &#8226;   <a href="#core">core</a>
+ &#8226;   <a href="#dataclasses">dataclasses</a>
+ &#8226;   <a href="#io">io</a>
+ &#8226;   <a href="#json">json</a>
+ &#8226;   <a href="#math">math</a>
+ &#8226;   <a href="#matplotlib.pyplot">matplotlib.pyplot</a>
+ &#8226;   <a href="#pathlib">pathlib</a>
+ &#8226;   <a href="#typing">typing</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#core.executor">core.executor</a>
+ &#8226;   <a href="#main.py">main.py</a>
+ &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
 
   </div>
 
@@ -12160,8 +12227,10 @@ imports:
     <a href="#__future__">__future__</a>
  &#8226;   <a href="#config.settings">config.settings</a>
  &#8226;   <a href="#core">core</a>
+ &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#dataclasses">dataclasses</a>
+ &#8226;   <a href="#json">json</a>
  &#8226;   <a href="#pathlib">pathlib</a>
  &#8226;   <a href="#re">re</a>
  &#8226;   <a href="#subprocess">subprocess</a>
@@ -12222,6 +12291,7 @@ imports:
 imported by:
     <a href="#core">core</a>
  &#8226;   <a href="#dify.workflow">dify.workflow</a>
+ &#8226;   <a href="#llm.gemini_client">llm.gemini_client</a>
 
   </div>
 
@@ -12438,6 +12508,7 @@ imported by:
  &#8226;   <a href="#anyio.streams.memory">anyio.streams.memory</a>
  &#8226;   <a href="#anyio.streams.stapled">anyio.streams.stapled</a>
  &#8226;   <a href="#anyio.streams.tls">anyio.streams.tls</a>
+ &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#core.code_validator">core.code_validator</a>
  &#8226;   <a href="#core.executor">core.executor</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
@@ -12564,6 +12635,7 @@ imported by:
  &#8226;   <a href="#sqlite3.dbapi2">sqlite3.dbapi2</a>
  &#8226;   <a href="#tomllib._re">tomllib._re</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#xlrd.xldate">xlrd.xldate</a>
  &#8226;   <a href="#xmlrpc.client">xmlrpc.client</a>
  &#8226;   <a href="#zoneinfo._zoneinfo">zoneinfo._zoneinfo</a>
 
@@ -13063,8 +13135,8 @@ imports:
  &#8226;   <a href="#httpx">httpx</a>
  &#8226;   <a href="#json">json</a>
  &#8226;   <a href="#llm">llm</a>
+ &#8226;   <a href="#llm.cancellation">llm.cancellation</a>
  &#8226;   <a href="#platform">platform</a>
- &#8226;   <a href="#time">time</a>
  &#8226;   <a href="#typing">typing</a>
 
   </div>
@@ -13092,7 +13164,9 @@ imports:
  &#8226;   <a href="#core.prompt_builder">core.prompt_builder</a>
  &#8226;   <a href="#dataclasses">dataclasses</a>
  &#8226;   <a href="#dify">dify</a>
+ &#8226;   <a href="#json">json</a>
  &#8226;   <a href="#llm">llm</a>
+ &#8226;   <a href="#llm.cancellation">llm.cancellation</a>
  &#8226;   <a href="#typing">typing</a>
 
   </div>
@@ -20186,6 +20260,7 @@ imported by:
  &#8226;   <a href="#asyncio.unix_events">asyncio.unix_events</a>
  &#8226;   <a href="#bz2">bz2</a>
  &#8226;   <a href="#configparser">configparser</a>
+ &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#csv">csv</a>
  &#8226;   <a href="#dateutil.parser._parser">dateutil.parser._parser</a>
  &#8226;   <a href="#dateutil.zoneinfo">dateutil.zoneinfo</a>
@@ -20283,6 +20358,7 @@ imported by:
  &#8226;   <a href="#urllib.error">urllib.error</a>
  &#8226;   <a href="#urllib.request">urllib.request</a>
  &#8226;   <a href="#uuid">uuid</a>
+ &#8226;   <a href="#xlrd.timemachine">xlrd.timemachine</a>
  &#8226;   <a href="#xml.dom.minidom">xml.dom.minidom</a>
  &#8226;   <a href="#xml.dom.pulldom">xml.dom.pulldom</a>
  &#8226;   <a href="#xml.etree.ElementTree">xml.etree.ElementTree</a>
@@ -20514,9 +20590,12 @@ imports:
   <div class="import">
 imported by:
     <a href="#_pytest.cacheprovider">_pytest.cacheprovider</a>
+ &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
+ &#8226;   <a href="#core.executor">core.executor</a>
  &#8226;   <a href="#core.prompt_builder">core.prompt_builder</a>
  &#8226;   <a href="#dateutil.zoneinfo">dateutil.zoneinfo</a>
  &#8226;   <a href="#dify.client">dify.client</a>
+ &#8226;   <a href="#dify.workflow">dify.workflow</a>
  &#8226;   <a href="#httpx._content">httpx._content</a>
  &#8226;   <a href="#httpx._main">httpx._main</a>
  &#8226;   <a href="#httpx._models">httpx._models</a>
@@ -20719,8 +20798,31 @@ imports:
 imported by:
     <a href="#dify.client">dify.client</a>
  &#8226;   <a href="#dify.workflow">dify.workflow</a>
+ &#8226;   <a href="#llm.cancellation">llm.cancellation</a>
  &#8226;   <a href="#llm.gemini_client">llm.gemini_client</a>
  &#8226;   <a href="#main.py">main.py</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="llm.cancellation"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/llm/cancellation.py" type="text/plain"><tt>llm.cancellation</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#llm">llm</a>
+ &#8226;   <a href="#threading">threading</a>
+ &#8226;   <a href="#typing">typing</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#dify.client">dify.client</a>
+ &#8226;   <a href="#dify.workflow">dify.workflow</a>
+ &#8226;   <a href="#llm.gemini_client">llm.gemini_client</a>
+ &#8226;   <a href="#workers.analysis_worker">workers.analysis_worker</a>
 
   </div>
 
@@ -20734,11 +20836,12 @@ imports:
     <a href="#__future__">__future__</a>
  &#8226;   <a href="#collections.abc">collections.abc</a>
  &#8226;   <a href="#config.settings">config.settings</a>
+ &#8226;   <a href="#core.prompt_builder">core.prompt_builder</a>
  &#8226;   <a href="#httpx">httpx</a>
  &#8226;   <a href="#json">json</a>
  &#8226;   <a href="#llm">llm</a>
+ &#8226;   <a href="#llm.cancellation">llm.cancellation</a>
  &#8226;   <a href="#logging">logging</a>
- &#8226;   <a href="#time">time</a>
 
   </div>
   <div class="import">
@@ -20979,6 +21082,7 @@ imported by:
  &#8226;   <a href="#anyio.abc._eventloop">anyio.abc._eventloop</a>
  &#8226;   <a href="#asyncio.windows_events">asyncio.windows_events</a>
  &#8226;   <a href="#contourpy.chunk">contourpy.chunk</a>
+ &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#dateutil.relativedelta">dateutil.relativedelta</a>
  &#8226;   <a href="#dateutil.rrule">dateutil.rrule</a>
  &#8226;   <a href="#fractions">fractions</a>
@@ -23768,7 +23872,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#main.py">main.py</a>
+    <a href="#core.analysis_result">core.analysis_result</a>
+ &#8226;   <a href="#main.py">main.py</a>
  &#8226;   <a href="#matplotlib">matplotlib</a>
  &#8226;   <a href="#matplotlib._enums">matplotlib._enums</a>
  &#8226;   <a href="#matplotlib.backends.backend_webagg_core">matplotlib.backends.backend_webagg_core</a>
@@ -24557,6 +24662,7 @@ imported by:
  &#8226;   <a href="#numpy._core.memmap">numpy._core.memmap</a>
  &#8226;   <a href="#pandas.io.common">pandas.io.common</a>
  &#8226;   <a href="#pandas.io.excel._openpyxl">pandas.io.excel._openpyxl</a>
+ &#8226;   <a href="#xlrd.book">xlrd.book</a>
 
   </div>
 
@@ -37555,6 +37661,7 @@ imported by:
  &#8226;   <a href="#statistics">statistics</a>
  &#8226;   <a href="#typing">typing</a>
  &#8226;   <a href="#typing_extensions">typing_extensions</a>
+ &#8226;   <a href="#xlrd.formula">xlrd.formula</a>
 
   </div>
 
@@ -37875,6 +37982,7 @@ imported by:
  &#8226;   <a href="#urllib.request">urllib.request</a>
  &#8226;   <a href="#uuid">uuid</a>
  &#8226;   <a href="#webbrowser">webbrowser</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
  &#8226;   <a href="#xml.dom.domreg">xml.dom.domreg</a>
  &#8226;   <a href="#xml.sax">xml.sax</a>
  &#8226;   <a href="#xml.sax.saxutils">xml.sax.saxutils</a>
@@ -48694,6 +48802,7 @@ imports:
  &#8226;   <a href="#pandas.io.excel._base">pandas.io.excel._base</a>
  &#8226;   <a href="#typing">typing</a>
  &#8226;   <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.xldate">xlrd.xldate</a>
 
   </div>
   <div class="import">
@@ -51139,6 +51248,7 @@ imported by:
  &#8226;   <a href="#_pytest.tmpdir">_pytest.tmpdir</a>
  &#8226;   <a href="#anyio._core._fileio">anyio._core._fileio</a>
  &#8226;   <a href="#config.runtime_paths">config.runtime_paths</a>
+ &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#core.executor">core.executor</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#dotenv.main">dotenv.main</a>
@@ -51717,6 +51827,7 @@ imported by:
  &#8226;   <a href="#sysconfig">sysconfig</a>
  &#8226;   <a href="#unittest.case">unittest.case</a>
  &#8226;   <a href="#unittest.mock">unittest.mock</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
 
   </div>
 
@@ -60725,6 +60836,7 @@ imported by:
  &#8226;   <a href="#urllib.parse">urllib.parse</a>
  &#8226;   <a href="#urllib.request">urllib.request</a>
  &#8226;   <a href="#warnings">warnings</a>
+ &#8226;   <a href="#xlrd.formatting">xlrd.formatting</a>
  &#8226;   <a href="#xml.etree.ElementPath">xml.etree.ElementPath</a>
  &#8226;   <a href="#xml.etree.ElementTree">xml.etree.ElementTree</a>
  &#8226;   <a href="#zipfile._path">zipfile._path</a>
@@ -65622,6 +65734,12 @@ imported by:
  &#8226;   <a href="#shiboken6">shiboken6</a>
  &#8226;   <a href="#six">six</a>
  &#8226;   <a href="#tarfile">tarfile</a>
+ &#8226;   <a href="#xlrd.biffh">xlrd.biffh</a>
+ &#8226;   <a href="#xlrd.book">xlrd.book</a>
+ &#8226;   <a href="#xlrd.compdoc">xlrd.compdoc</a>
+ &#8226;   <a href="#xlrd.formatting">xlrd.formatting</a>
+ &#8226;   <a href="#xlrd.formula">xlrd.formula</a>
+ &#8226;   <a href="#xlrd.sheet">xlrd.sheet</a>
  &#8226;   <a href="#zipfile">zipfile</a>
  &#8226;   <a href="#zoneinfo._common">zoneinfo._common</a>
 
@@ -66057,6 +66175,10 @@ imported by:
  &#8226;   <a href="#warnings">warnings</a>
  &#8226;   <a href="#weakref">weakref</a>
  &#8226;   <a href="#webbrowser">webbrowser</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.biffh">xlrd.biffh</a>
+ &#8226;   <a href="#xlrd.compdoc">xlrd.compdoc</a>
+ &#8226;   <a href="#xlrd.timemachine">xlrd.timemachine</a>
  &#8226;   <a href="#xml.dom.domreg">xml.dom.domreg</a>
  &#8226;   <a href="#xml.etree.ElementTree">xml.etree.ElementTree</a>
  &#8226;   <a href="#xml.parsers.expat">xml.parsers.expat</a>
@@ -66330,6 +66452,7 @@ imported by:
  &#8226;   <a href="#http.cookiejar">http.cookiejar</a>
  &#8226;   <a href="#httpcore._synchronization">httpcore._synchronization</a>
  &#8226;   <a href="#importlib.util">importlib.util</a>
+ &#8226;   <a href="#llm.cancellation">llm.cancellation</a>
  &#8226;   <a href="#logging">logging</a>
  &#8226;   <a href="#main.py">main.py</a>
  &#8226;   <a href="#matplotlib.backends.backend_webagg">matplotlib.backends.backend_webagg</a>
@@ -66399,7 +66522,6 @@ imported by:
  &#8226;   <a href="#datetime">datetime</a>
  &#8226;   <a href="#dateutil.parser._parser">dateutil.parser._parser</a>
  &#8226;   <a href="#dateutil.tz.tz">dateutil.tz.tz</a>
- &#8226;   <a href="#dify.client">dify.client</a>
  &#8226;   <a href="#email._parseaddr">email._parseaddr</a>
  &#8226;   <a href="#email.generator">email.generator</a>
  &#8226;   <a href="#email.utils">email.utils</a>
@@ -66414,7 +66536,6 @@ imported by:
  &#8226;   <a href="#httpcore._sync.http2">httpcore._sync.http2</a>
  &#8226;   <a href="#httpx._auth">httpx._auth</a>
  &#8226;   <a href="#httpx._client">httpx._client</a>
- &#8226;   <a href="#llm.gemini_client">llm.gemini_client</a>
  &#8226;   <a href="#logging">logging</a>
  &#8226;   <a href="#matplotlib.backend_bases">matplotlib.backend_bases</a>
  &#8226;   <a href="#matplotlib.backend_tools">matplotlib.backend_tools</a>
@@ -66450,6 +66571,7 @@ imported by:
  &#8226;   <a href="#unittest.runner">unittest.runner</a>
  &#8226;   <a href="#urllib.request">urllib.request</a>
  &#8226;   <a href="#uuid">uuid</a>
+ &#8226;   <a href="#xlrd.book">xlrd.book</a>
  &#8226;   <a href="#xmlrpc.client">xmlrpc.client</a>
  &#8226;   <a href="#zipfile">zipfile</a>
  &#8226;   <a href="#zipimport">zipimport</a>
@@ -67104,6 +67226,7 @@ imported by:
  &#8226;   <a href="#contourpy.convert">contourpy.convert</a>
  &#8226;   <a href="#contourpy.dechunk">contourpy.dechunk</a>
  &#8226;   <a href="#contourpy.typecheck">contourpy.typecheck</a>
+ &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#core.session_manager">core.session_manager</a>
  &#8226;   <a href="#cycler">cycler</a>
@@ -67174,6 +67297,7 @@ imported by:
  &#8226;   <a href="#iniconfig._parse">iniconfig._parse</a>
  &#8226;   <a href="#iniconfig.exceptions">iniconfig.exceptions</a>
  &#8226;   <a href="#kiwisolver._cext">kiwisolver._cext</a>
+ &#8226;   <a href="#llm.cancellation">llm.cancellation</a>
  &#8226;   <a href="#matplotlib._mathtext">matplotlib._mathtext</a>
  &#8226;   <a href="#matplotlib._mathtext_data">matplotlib._mathtext_data</a>
  &#8226;   <a href="#matplotlib._tri">matplotlib._tri</a>
@@ -67548,6 +67672,7 @@ imported by:
  &#8226;   <a href="#tomllib._re">tomllib._re</a>
  &#8226;   <a href="#tomllib._types">tomllib._types</a>
  &#8226;   <a href="#typing_extensions">typing_extensions</a>
+ &#8226;   <a href="#workers.analysis_worker">workers.analysis_worker</a>
 
   </div>
 
@@ -68040,8 +68165,11 @@ imports:
 imported by:
     <a href="#ui.api_settings_dialog">ui.api_settings_dialog</a>
  &#8226;   <a href="#ui.decision_panel">ui.decision_panel</a>
+ &#8226;   <a href="#ui.floating_controls">ui.floating_controls</a>
  &#8226;   <a href="#ui.history_page">ui.history_page</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#ui.overview_popover">ui.overview_popover</a>
+ &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
 
   </div>
 
@@ -68059,6 +68187,7 @@ imports:
  &#8226;   <a href="#config.runtime_paths">config.runtime_paths</a>
  &#8226;   <a href="#config.settings">config.settings</a>
  &#8226;   <a href="#ui">ui</a>
+ &#8226;   <a href="#urllib.parse">urllib.parse</a>
 
   </div>
   <div class="import">
@@ -68078,6 +68207,26 @@ imports:
  &#8226;   <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
  &#8226;   <a href="#__future__">__future__</a>
  &#8226;   <a href="#dataclasses">dataclasses</a>
+ &#8226;   <a href="#ui">ui</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#ui.main_window">ui.main_window</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="ui.floating_controls"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/ui/floating_controls.py" type="text/plain"><tt>ui.floating_controls</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#PySide6.QtCore">PySide6.QtCore</a>
+ &#8226;   <a href="#PySide6.QtGui">PySide6.QtGui</a>
+ &#8226;   <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
+ &#8226;   <a href="#__future__">__future__</a>
  &#8226;   <a href="#ui">ui</a>
 
   </div>
@@ -68117,6 +68266,7 @@ imports:
  &#8226;   <a href="#PySide6.QtGui">PySide6.QtGui</a>
  &#8226;   <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
  &#8226;   <a href="#config.settings">config.settings</a>
+ &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#datetime">datetime</a>
  &#8226;   <a href="#json">json</a>
@@ -68125,7 +68275,10 @@ imports:
  &#8226;   <a href="#ui">ui</a>
  &#8226;   <a href="#ui.api_settings_dialog">ui.api_settings_dialog</a>
  &#8226;   <a href="#ui.decision_panel">ui.decision_panel</a>
+ &#8226;   <a href="#ui.floating_controls">ui.floating_controls</a>
  &#8226;   <a href="#ui.history_page">ui.history_page</a>
+ &#8226;   <a href="#ui.overview_popover">ui.overview_popover</a>
+ &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
  &#8226;   <a href="#workers.analysis_worker">workers.analysis_worker</a>
 
   </div>
@@ -68133,6 +68286,47 @@ imports:
 imported by:
     <a href="#main.py">main.py</a>
  &#8226;   <a href="#ui">ui</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="ui.overview_popover"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/ui/overview_popover.py" type="text/plain"><tt>ui.overview_popover</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#PySide6.QtCore">PySide6.QtCore</a>
+ &#8226;   <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
+ &#8226;   <a href="#__future__">__future__</a>
+ &#8226;   <a href="#ui">ui</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#ui.main_window">ui.main_window</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="ui.result_panel"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/ui/result_panel.py" type="text/plain"><tt>ui.result_panel</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#PySide6.QtCore">PySide6.QtCore</a>
+ &#8226;   <a href="#PySide6.QtGui">PySide6.QtGui</a>
+ &#8226;   <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
+ &#8226;   <a href="#__future__">__future__</a>
+ &#8226;   <a href="#base64">base64</a>
+ &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
+ &#8226;   <a href="#ui">ui</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#ui.main_window">ui.main_window</a>
 
   </div>
 
@@ -68541,6 +68735,7 @@ imported by:
  &#8226;   <a href="#pathlib">pathlib</a>
  &#8226;   <a href="#pydoc">pydoc</a>
  &#8226;   <a href="#setuptools.config._validate_pyproject.formats">setuptools.config._validate_pyproject.formats</a>
+ &#8226;   <a href="#ui.api_settings_dialog">ui.api_settings_dialog</a>
  &#8226;   <a href="#urllib.request">urllib.request</a>
  &#8226;   <a href="#xml.dom.xmlbuilder">xml.dom.xmlbuilder</a>
  &#8226;   <a href="#xml.etree.ElementInclude">xml.etree.ElementInclude</a>
@@ -69162,6 +69357,8 @@ imports:
  &#8226;   <a href="#__future__">__future__</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#dify.workflow">dify.workflow</a>
+ &#8226;   <a href="#llm.cancellation">llm.cancellation</a>
+ &#8226;   <a href="#typing">typing</a>
  &#8226;   <a href="#workers">workers</a>
 
   </div>
@@ -69175,11 +69372,243 @@ imported by:
 
 <div class="node">
   <a name="xlrd"></a>
-  <a target="code" href="" type="text/plain"><tt>xlrd</tt></a>
-<span class="moduletype">MissingModule</span>  <div class="import">
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/.venv/Lib/site-packages/xlrd/__init__.py" type="text/plain"><tt>xlrd</tt></a>
+<span class="moduletype">Package</span>  <div class="import">
+imports:
+    <a href="#os">os</a>
+ &#8226;   <a href="#pprint">pprint</a>
+ &#8226;   <a href="#sys">sys</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.biffh">xlrd.biffh</a>
+ &#8226;   <a href="#xlrd.book">xlrd.book</a>
+ &#8226;   <a href="#xlrd.compdoc">xlrd.compdoc</a>
+ &#8226;   <a href="#xlrd.formatting">xlrd.formatting</a>
+ &#8226;   <a href="#xlrd.formula">xlrd.formula</a>
+ &#8226;   <a href="#xlrd.info">xlrd.info</a>
+ &#8226;   <a href="#xlrd.sheet">xlrd.sheet</a>
+ &#8226;   <a href="#xlrd.timemachine">xlrd.timemachine</a>
+ &#8226;   <a href="#xlrd.xldate">xlrd.xldate</a>
+ &#8226;   <a href="#zipfile">zipfile</a>
+
+  </div>
+  <div class="import">
 imported by:
-    <a href="#pandas.io.excel._base">pandas.io.excel._base</a>
+    <a href="#main.py">main.py</a>
+ &#8226;   <a href="#pandas.io.excel._base">pandas.io.excel._base</a>
  &#8226;   <a href="#pandas.io.excel._xlrd">pandas.io.excel._xlrd</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.biffh">xlrd.biffh</a>
+ &#8226;   <a href="#xlrd.book">xlrd.book</a>
+ &#8226;   <a href="#xlrd.compdoc">xlrd.compdoc</a>
+ &#8226;   <a href="#xlrd.formatting">xlrd.formatting</a>
+ &#8226;   <a href="#xlrd.formula">xlrd.formula</a>
+ &#8226;   <a href="#xlrd.info">xlrd.info</a>
+ &#8226;   <a href="#xlrd.sheet">xlrd.sheet</a>
+ &#8226;   <a href="#xlrd.timemachine">xlrd.timemachine</a>
+ &#8226;   <a href="#xlrd.xldate">xlrd.xldate</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="xlrd.biffh"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/.venv/Lib/site-packages/xlrd/biffh.py" type="text/plain"><tt>xlrd.biffh</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#struct">struct</a>
+ &#8226;   <a href="#sys">sys</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.timemachine">xlrd.timemachine</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.book">xlrd.book</a>
+ &#8226;   <a href="#xlrd.formatting">xlrd.formatting</a>
+ &#8226;   <a href="#xlrd.formula">xlrd.formula</a>
+ &#8226;   <a href="#xlrd.sheet">xlrd.sheet</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="xlrd.book"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/.venv/Lib/site-packages/xlrd/book.py" type="text/plain"><tt>xlrd.book</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#mmap">mmap</a>
+ &#8226;   <a href="#struct">struct</a>
+ &#8226;   <a href="#time">time</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.biffh">xlrd.biffh</a>
+ &#8226;   <a href="#xlrd.compdoc">xlrd.compdoc</a>
+ &#8226;   <a href="#xlrd.formatting">xlrd.formatting</a>
+ &#8226;   <a href="#xlrd.formula">xlrd.formula</a>
+ &#8226;   <a href="#xlrd.sheet">xlrd.sheet</a>
+ &#8226;   <a href="#xlrd.timemachine">xlrd.timemachine</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#xlrd">xlrd</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="xlrd.compdoc"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/.venv/Lib/site-packages/xlrd/compdoc.py" type="text/plain"><tt>xlrd.compdoc</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#array">array</a>
+ &#8226;   <a href="#struct">struct</a>
+ &#8226;   <a href="#sys">sys</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.timemachine">xlrd.timemachine</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.book">xlrd.book</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="xlrd.formatting"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/.venv/Lib/site-packages/xlrd/formatting.py" type="text/plain"><tt>xlrd.formatting</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#re">re</a>
+ &#8226;   <a href="#struct">struct</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.biffh">xlrd.biffh</a>
+ &#8226;   <a href="#xlrd.timemachine">xlrd.timemachine</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.book">xlrd.book</a>
+ &#8226;   <a href="#xlrd.sheet">xlrd.sheet</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="xlrd.formula"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/.venv/Lib/site-packages/xlrd/formula.py" type="text/plain"><tt>xlrd.formula</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#copy">copy</a>
+ &#8226;   <a href="#operator">operator</a>
+ &#8226;   <a href="#struct">struct</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.biffh">xlrd.biffh</a>
+ &#8226;   <a href="#xlrd.timemachine">xlrd.timemachine</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.book">xlrd.book</a>
+ &#8226;   <a href="#xlrd.sheet">xlrd.sheet</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="xlrd.info"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/.venv/Lib/site-packages/xlrd/info.py" type="text/plain"><tt>xlrd.info</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#xlrd">xlrd</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#xlrd">xlrd</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="xlrd.sheet"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/.venv/Lib/site-packages/xlrd/sheet.py" type="text/plain"><tt>xlrd.sheet</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#array">array</a>
+ &#8226;   <a href="#struct">struct</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.biffh">xlrd.biffh</a>
+ &#8226;   <a href="#xlrd.formatting">xlrd.formatting</a>
+ &#8226;   <a href="#xlrd.formula">xlrd.formula</a>
+ &#8226;   <a href="#xlrd.timemachine">xlrd.timemachine</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.book">xlrd.book</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="xlrd.timemachine"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/.venv/Lib/site-packages/xlrd/timemachine.py" type="text/plain"><tt>xlrd.timemachine</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#cStringIO">cStringIO</a>
+ &#8226;   <a href="#io">io</a>
+ &#8226;   <a href="#sys">sys</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#xlrd">xlrd</a>
+ &#8226;   <a href="#xlrd.biffh">xlrd.biffh</a>
+ &#8226;   <a href="#xlrd.book">xlrd.book</a>
+ &#8226;   <a href="#xlrd.compdoc">xlrd.compdoc</a>
+ &#8226;   <a href="#xlrd.formatting">xlrd.formatting</a>
+ &#8226;   <a href="#xlrd.formula">xlrd.formula</a>
+ &#8226;   <a href="#xlrd.sheet">xlrd.sheet</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="xlrd.xldate"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/.venv/Lib/site-packages/xlrd/xldate.py" type="text/plain"><tt>xlrd.xldate</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#datetime">datetime</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#pandas.io.excel._xlrd">pandas.io.excel._xlrd</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
 
   </div>
 
@@ -69785,6 +70214,7 @@ imported by:
  &#8226;   <a href="#setuptools.wheel">setuptools.wheel</a>
  &#8226;   <a href="#shiboken6">shiboken6</a>
  &#8226;   <a href="#shutil">shutil</a>
+ &#8226;   <a href="#xlrd">xlrd</a>
  &#8226;   <a href="#zipfile._path">zipfile._path</a>
 
   </div>

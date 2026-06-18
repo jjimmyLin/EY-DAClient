@@ -13,6 +13,7 @@ import textwrap
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from core.analysis_result import AnalysisResult
 from core.preprocessor import FileMeta
 from config.settings import settings
 
@@ -26,6 +27,7 @@ class ExecutionResult:
     elapsed_sec: float
     timed_out: bool = False
     chart_paths: list[str] = field(default_factory=list)
+    analysis_result: AnalysisResult = field(default_factory=AnalysisResult)
 
     @property
     def output(self) -> str:
@@ -56,19 +58,28 @@ class Executor:
             ExecutionResult 对象
         """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # 生成引导脚本
             script_path = Path(tmp_dir) / "analysis.py"
+            result_path = Path(tmp_dir) / "analysis_result.json"
             script_path.write_text(
-                self._build_bootstrap(code, files_meta),
+                self._build_bootstrap(code, files_meta, result_path),
                 encoding="utf-8",
             )
-            
-            # 在子进程中执行
-            return self._run_subprocess(str(script_path))
+
+            execution = self._run_subprocess(str(script_path))
+            execution.analysis_result = self._load_analysis_result(
+                result_path,
+                execution.stdout,
+            )
+            return execution
 
     # ─────────────────────────────────────────────────────────────────
 
-    def _build_bootstrap(self, code: str, files_meta: list[FileMeta]) -> str:
+    def _build_bootstrap(
+        self,
+        code: str,
+        files_meta: list[FileMeta],
+        result_path: Path,
+    ) -> str:
         """
         构建完整的执行脚本。
         包括导入、加载 DataFrame、执行用户代码。
@@ -113,20 +124,34 @@ class Executor:
         dfs_block = "dfs = {\n" + ",\n".join(dfs_entries) + "\n}"
 
         # ── 完整的引导脚本 ──
+        user_code = textwrap.indent(code, "    ")
         bootstrap = "\n".join([
+            "import sys as _bootstrap_sys",
+            f"_bootstrap_sys.path.insert(0, {str(settings.PROJECT_ROOT)!r})",
+            "_bootstrap_sys.stdout.reconfigure(encoding='utf-8', errors='replace')",
+            "_bootstrap_sys.stderr.reconfigure(encoding='utf-8', errors='replace')",
             "import pandas as pd",
             "import matplotlib",
             "matplotlib.use('Agg')  # 无头模式",
             "import matplotlib.pyplot as plt",
+            "from core.analysis_result import ResultCollector",
             "import warnings",
             "warnings.filterwarnings('ignore')",
+            "del warnings",
+            "del _bootstrap_sys",
             "",
             *load_lines,
             "",
             dfs_block,
             "",
+            "result = ResultCollector()",
+            "del ResultCollector",
             "# ── 用户代码开始 ──",
-            code,
+            "try:",
+            user_code,
+            "finally:",
+            "    result.capture_open_figures(plt)",
+            f"    result.write_json({str(result_path)!r})",
             "# ── 用户代码结束 ──",
         ])
 
@@ -160,6 +185,8 @@ class Executor:
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self._timeout,
             )
             stdout = result.stdout
@@ -189,6 +216,28 @@ class Executor:
             elapsed_sec=elapsed,
             timed_out=timed_out,
         )
+
+    @staticmethod
+    def _load_analysis_result(
+        result_path: Path,
+        stdout: str,
+    ) -> AnalysisResult:
+        import json
+
+        payload = {}
+        if result_path.exists():
+            try:
+                payload = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+        analysis_result = AnalysisResult.from_dict(payload)
+        analysis_result.raw_output = stdout.strip()
+        if not analysis_result.summary and analysis_result.raw_output:
+            preview_limit = 1200
+            analysis_result.summary = analysis_result.raw_output[:preview_limit]
+            if len(analysis_result.raw_output) > preview_limit:
+                analysis_result.summary += "\n\nOutput continues in Execution details."
+        return analysis_result
 
     @staticmethod
     def _safe_var(name: str) -> str:

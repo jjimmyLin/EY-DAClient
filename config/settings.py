@@ -93,17 +93,29 @@ class Settings:
         if cls.LLM_PROVIDER == "gemini":
             if not cls.GEMINI_API_KEY:
                 raise EnvironmentError(
-                    "❌ GEMINI_API_KEY 未设置。请检查 .env 文件。"
+                    "GEMINI_API_KEY 未设置。请在 DevOps 设置中填写有效的 API key。"
                 )
+            cls.validate_gemini_api_key(cls.GEMINI_API_KEY)
         elif cls.LLM_PROVIDER == "dify":
             if not cls.DIFY_API_KEY:
                 raise EnvironmentError(
-                    "❌ DIFY_API_KEY 未设置。请检查 .env 文件。"
+                    "DIFY_API_KEY 未设置。请检查 API 设置。"
                 )
             if not cls.DIFY_BASE_URL:
                 raise EnvironmentError(
-                    "❌ DIFY_BASE_URL 未设置。请检查 .env 文件。"
+                    "DIFY_BASE_URL 未设置。请检查 API 设置。"
                 )
+
+    @staticmethod
+    def validate_gemini_api_key(value: str) -> None:
+        """Reject values that cannot be used as an HTTP header API key."""
+        key = value.strip()
+        if not key:
+            raise ValueError("DevOps API key is required.")
+        if not key.isascii() or any(character.isspace() for character in key):
+            raise ValueError(
+                "DevOps API key is invalid. Enter the original ASCII key without spaces."
+            )
 
     @classmethod
     def reload(cls) -> None:

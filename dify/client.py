@@ -8,7 +8,6 @@ from __future__ import annotations
 import getpass
 import json
 import platform
-import time
 from collections.abc import Callable
 from typing import Any
 
@@ -16,6 +15,7 @@ import httpx
 
 from config.settings import settings
 from llm import LLMError
+from llm.cancellation import CancellationToken, RequestCancelled
 
 WorkflowEvent = dict[str, object]
 EventCallback = Callable[[WorkflowEvent], None]
@@ -35,25 +35,40 @@ class DifyClientError(LLMError):
 class DifyClient:
     """Dify Workflow API client."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        cancellation_token: CancellationToken | None = None,
+    ) -> None:
         self._base_url = settings.DIFY_BASE_URL.rstrip("/")
         self._api_key = settings.DIFY_API_KEY
         self._timeout = settings.DIFY_TIMEOUT
         self._max_retries = 3
         self._retry_delay = 1
+        self._cancellation_token = cancellation_token or CancellationToken()
 
     def generate_code(
         self,
         prompt: dict,
         event_callback: EventCallback | None = None,
     ) -> str:
+        return self.generate_analysis(
+            prompt,
+            event_callback=event_callback,
+        )["code"]
+
+    def generate_analysis(
+        self,
+        prompt: dict,
+        event_callback: EventCallback | None = None,
+    ) -> dict[str, Any]:
         payload = self._build_workflow_payload(prompt)
 
         self._emit(event_callback, "status", "Sending Dify workflow request")
         response = self._run_workflow_streaming(payload, event_callback=event_callback)
         self._emit(event_callback, "status", "Dify workflow response received")
 
-        code = self.extract_code_from_response(response)
+        generated = self.extract_analysis_from_response(response)
+        code = generated["code"]
         self._emit(
             event_callback,
             "content_delta",
@@ -64,7 +79,7 @@ class DifyClient:
 
         if not code:
             raise DifyClientError(400, "Dify did not return Python code")
-        return code
+        return generated
 
     def _build_workflow_payload(self, prompt: dict) -> dict:
         parameters = self.get_parameters()
@@ -93,26 +108,36 @@ class DifyClient:
         url = f"{self._base_url}/{endpoint.lstrip('/')}"
 
         for attempt in range(self._max_retries):
+            self._cancellation_token.raise_if_cancelled()
             try:
                 with httpx.Client(timeout=self._timeout) as client:
-                    response = client.request(
-                        method,
-                        url,
-                        headers=headers,
-                        json=payload,
-                    )
+                    self._cancellation_token.set_active_client(client)
+                    try:
+                        response = client.request(
+                            method,
+                            url,
+                            headers=headers,
+                            json=payload,
+                        )
+                    finally:
+                        self._cancellation_token.clear_active_client(client)
+                self._cancellation_token.raise_if_cancelled()
 
                 if response.is_success:
                     return response.json()
                 raise DifyClientError(response.status_code, response.text)
             except httpx.TimeoutException:
+                if self._cancellation_token.is_cancelled:
+                    raise RequestCancelled("Request cancelled")
                 if attempt < self._max_retries - 1:
-                    time.sleep(self._retry_delay)
+                    self._cancellation_token.wait(self._retry_delay)
                     continue
                 raise DifyClientError(408, "Request timed out")
             except httpx.RequestError as exc:
+                if self._cancellation_token.is_cancelled:
+                    raise RequestCancelled("Request cancelled") from exc
                 if attempt < self._max_retries - 1:
-                    time.sleep(self._retry_delay)
+                    self._cancellation_token.wait(self._retry_delay)
                     continue
                 raise DifyClientError(0, str(exc))
 
@@ -134,26 +159,39 @@ class DifyClient:
         )
 
         for attempt in range(self._max_retries):
+            self._cancellation_token.raise_if_cancelled()
             try:
                 with httpx.Client(timeout=timeout) as client:
-                    with client.stream(
-                        "POST",
-                        url,
-                        headers=headers,
-                        json=payload,
-                    ) as response:
-                        if not response.is_success:
-                            raise DifyClientError(response.status_code, response.text)
+                    self._cancellation_token.set_active_client(client)
+                    try:
+                        with client.stream(
+                            "POST",
+                            url,
+                            headers=headers,
+                            json=payload,
+                        ) as response:
+                            if not response.is_success:
+                                response.read()
+                                raise DifyClientError(
+                                    response.status_code,
+                                    response.text,
+                                )
 
-                        return self._collect_stream(response, event_callback)
+                            return self._collect_stream(response, event_callback)
+                    finally:
+                        self._cancellation_token.clear_active_client(client)
             except httpx.TimeoutException:
+                if self._cancellation_token.is_cancelled:
+                    raise RequestCancelled("Request cancelled")
                 if attempt < self._max_retries - 1:
-                    time.sleep(self._retry_delay)
+                    self._cancellation_token.wait(self._retry_delay)
                     continue
                 raise DifyClientError(408, "Request timed out")
             except httpx.RequestError as exc:
+                if self._cancellation_token.is_cancelled:
+                    raise RequestCancelled("Request cancelled") from exc
                 if attempt < self._max_retries - 1:
-                    time.sleep(self._retry_delay)
+                    self._cancellation_token.wait(self._retry_delay)
                     continue
                 raise DifyClientError(0, str(exc))
 
@@ -170,6 +208,7 @@ class DifyClient:
         workflow_run_id = ""
 
         for raw_line in response.iter_lines():
+            self._cancellation_token.raise_if_cancelled()
             line = raw_line.strip()
             if not line or not line.startswith("data:"):
                 continue
@@ -243,40 +282,46 @@ class DifyClient:
         }
 
     def _build_inputs(self, prompt: dict, parameters: dict) -> dict[str, str]:
-        fields = self._extract_text_fields(parameters)
+        fields = self._extract_input_fields(parameters)
         names = {field["variable"] for field in fields}
-        inputs: dict[str, str] = {}
-
-        for name in names:
-            value = prompt.get(name)
-            if isinstance(value, str) and value.strip():
-                inputs[name] = value
-
-        if "query" in names:
-            inputs["query"] = prompt.get("query", "")
-            return inputs
-
-        combined_prompt = self._combine_prompt(prompt)
-        candidate = self._pick_text_field(fields, exclude=set(inputs))
-        if candidate is None:
+        contract = {"task_type", "context", "query"}
+        missing = contract - names
+        if missing:
             available = ", ".join(sorted(names)) or "<none>"
             raise DifyClientError(
                 400,
-                "Dify input variables are not compatible with this client. "
-                f"Available text variables: {available}",
+                "Dify workflow must define task_type, context, and query inputs. "
+                f"Missing: {', '.join(sorted(missing))}. Available: {available}",
             )
 
-        inputs[candidate] = combined_prompt
+        inputs: dict[str, str] = {}
+        for field in fields:
+            name = str(field["variable"])
+            if name not in contract:
+                continue
+            value = str(prompt.get(name) or "")
+            raw_max_length = field.get("max_length")
+            try:
+                max_length = int(raw_max_length)
+            except (TypeError, ValueError):
+                max_length = 0
+            if max_length > 0 and len(value) > max_length:
+                raise DifyClientError(
+                    400,
+                    f"{name} exceeds the Dify input limit "
+                    f"({len(value)} / {max_length} characters).",
+                )
+            inputs[name] = value
         return inputs
 
     @staticmethod
-    def _extract_text_fields(parameters: dict) -> list[dict[str, Any]]:
+    def _extract_input_fields(parameters: dict) -> list[dict[str, Any]]:
         fields: list[dict[str, Any]] = []
         for item in parameters.get("user_input_form", []) or []:
             if not isinstance(item, dict):
                 continue
             for field_type, field_cfg in item.items():
-                if field_type not in ("text-input", "paragraph"):
+                if field_type not in ("text-input", "paragraph", "select"):
                     continue
                 if not isinstance(field_cfg, dict):
                     continue
@@ -288,39 +333,10 @@ class DifyClient:
                         "type": field_type,
                         "variable": variable,
                         "required": bool(field_cfg.get("required")),
+                        "max_length": field_cfg.get("max_length"),
                     }
                 )
         return fields
-
-    @staticmethod
-    def _pick_text_field(
-        fields: list[dict[str, Any]],
-        exclude: set[str],
-    ) -> str | None:
-        candidates = [field for field in fields if field["variable"] not in exclude]
-        required = [field for field in candidates if field.get("required")]
-        if len(required) == 1:
-            return str(required[0]["variable"])
-        if len(candidates) == 1:
-            return str(candidates[0]["variable"])
-        query_like = [
-            field for field in candidates
-            if str(field["variable"]).lower() in {"query", "prompt", "input"}
-        ]
-        if len(query_like) == 1:
-            return str(query_like[0]["variable"])
-        return None
-
-    @staticmethod
-    def _combine_prompt(prompt: dict) -> str:
-        return (
-            "System instructions:\n"
-            f"{prompt.get('system', '').strip()}\n\n"
-            "Dataset context:\n"
-            f"{prompt.get('context', '').strip()}\n\n"
-            "User request:\n"
-            f"{prompt.get('query', '').strip()}"
-        ).strip()
 
     @staticmethod
     def _build_user_id() -> str:
@@ -329,6 +345,9 @@ class DifyClient:
         return f"{user_name}@{machine_name}"
 
     def extract_code_from_response(self, response: dict) -> str:
+        return self.extract_analysis_from_response(response)["code"]
+
+    def extract_analysis_from_response(self, response: dict) -> dict[str, Any]:
         data = response.get("data") or {}
         status = str(data.get("status", "")).lower()
         if status and status != "succeeded":
@@ -336,10 +355,24 @@ class DifyClient:
 
         outputs = data.get("outputs") or {}
         code = ""
+        plan: Any = None
 
         if isinstance(outputs, dict):
+            plan = outputs.get("analysis_plan") or outputs.get("plan")
+            overview_keys = {
+                "dataset_kind",
+                "topic",
+                "summary",
+                "rows",
+                "columns",
+                "sheet_count",
+                "suggestions",
+            }
+            if overview_keys.issubset(outputs):
+                code = json.dumps(outputs, ensure_ascii=False)
             code = (
-                outputs.get("code")
+                code
+                or outputs.get("code")
                 or outputs.get("result")
                 or outputs.get("answer")
                 or outputs.get("text")
@@ -348,7 +381,9 @@ class DifyClient:
             if not code:
                 code = next(
                     (
-                        value for value in outputs.values()
+                        value
+                        for key, value in outputs.items()
+                        if key not in {"analysis_plan", "plan"}
                         if isinstance(value, str) and value.strip()
                     ),
                     "",
@@ -361,7 +396,23 @@ class DifyClient:
             error = str(data.get("error", "Response did not contain Python code"))
             raise DifyClientError(400, error)
 
-        return self._strip_code_fences(code)
+        if isinstance(code, (dict, list)):
+            code = json.dumps(code, ensure_ascii=False)
+
+        if isinstance(plan, str):
+            try:
+                plan = json.loads(plan)
+            except json.JSONDecodeError:
+                plan = {"summary": plan, "requirements": []}
+        if isinstance(plan, dict) and isinstance(plan.get("structured_output"), dict):
+            plan = plan["structured_output"]
+        if not isinstance(plan, dict):
+            plan = {}
+
+        return {
+            "code": self._strip_code_fences(str(code)),
+            "plan": plan,
+        }
 
     @staticmethod
     def _strip_code_fences(text: str) -> str:

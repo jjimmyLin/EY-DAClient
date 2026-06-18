@@ -18,3 +18,15 @@ def qapp():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
     yield app
+
+
+@pytest.fixture(autouse=True)
+def prevent_live_overview_requests(monkeypatch):
+    """UI unit tests must not start real provider requests."""
+    from ui.main_window import MainWindow
+
+    monkeypatch.setattr(
+        MainWindow,
+        "_start_overview_worker",
+        lambda self, dataset_name, file_meta: None,
+    )

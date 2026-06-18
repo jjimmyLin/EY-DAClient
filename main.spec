@@ -12,6 +12,7 @@ a = Analysis(
     hiddenimports=[
         'dify.client',
         'dify.workflow',
+        'core.analysis_result',
         'llm',
         'llm.gemini_client',
         'matplotlib',
@@ -19,6 +20,7 @@ a = Analysis(
         'matplotlib.pyplot',
         'pandas',
         'openpyxl',
+        'xlrd',
     ],
     hookspath=[],
     hooksconfig={},

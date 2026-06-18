@@ -15,7 +15,7 @@ class LLMError(Exception):
         super().__init__(message)
 
 
-def get_client():
+def get_client(cancellation_token=None):
     """根据 settings.LLM_PROVIDER 返回对应的 LLM 客户端实例。
 
     返回的客户端都实现统一接口：``generate_code(prompt: dict) -> str``。
@@ -27,12 +27,12 @@ def get_client():
     if provider == "gemini":
         from llm.gemini_client import GeminiClient
 
-        return GeminiClient()
+        return GeminiClient(cancellation_token=cancellation_token)
 
     if provider == "dify":
         from dify.client import DifyClient
 
-        return DifyClient()
+        return DifyClient(cancellation_token=cancellation_token)
 
     raise LLMError(f"未知的 LLM_PROVIDER: {provider!r}")
 

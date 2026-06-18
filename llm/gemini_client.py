@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from collections.abc import Callable
 
 import httpx
 
 from config.settings import settings
 from llm import LLMError
+from llm.cancellation import CancellationToken, RequestCancelled
 
 logger = logging.getLogger(__name__)
 WorkflowEvent = dict[str, object]
@@ -47,7 +47,10 @@ _FALLBACK_STATUS_CODES = (429, 403, 503)
 class GeminiClient:
     """Gemini HTTP 客户端（支持多模型回退）"""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        cancellation_token: CancellationToken | None = None,
+    ) -> None:
         self._base_url = settings.GEMINI_BASE_URL.rstrip("/")
         self._api_key = settings.GEMINI_API_KEY
         self._model = settings.GEMINI_MODEL
@@ -56,6 +59,7 @@ class GeminiClient:
         self._retry_delay = 1
         self._current_model = self._model
         self._available_models: list[str] | None = None
+        self._cancellation_token = cancellation_token or CancellationToken()
 
     # =========================================================
     # Public API
@@ -106,13 +110,20 @@ class GeminiClient:
         Returns:
             生成的 Python 代码字符串（已去除 markdown 代码块符号）。
         """
+        from core.prompt_builder import PromptBuilder
+
+        request_prompt = dict(prompt)
+        request_prompt["system"] = PromptBuilder.devops_system_prompt(
+            str(prompt.get("task_type") or "analysis")
+        )
+
         logger.info("=== 开始代码生成 ===")
-        logger.info("系统提示词:\n%s", prompt.get("system", ""))
+        logger.info("系统提示词:\n%s", request_prompt["system"])
         logger.info("上下文长度: %d 字符", len(prompt.get("context", "")))
         logger.info("用户查询: %s", prompt.get("query", ""))
 
         self._emit(event_callback, "status", "Sending Gemini request")
-        response = self._post_generate_content(prompt)
+        response = self._post_generate_content(request_prompt)
         self._emit(event_callback, "status", "Gemini response received")
         text, thinking = self._extract_text(response)
 
@@ -147,17 +158,26 @@ class GeminiClient:
 
     def _check_model_available(self, model: str) -> bool:
         """通过 GET models/{model} 检查模型是否可用。"""
+        self._cancellation_token.raise_if_cancelled()
+        settings.validate_gemini_api_key(self._api_key)
         url = f"{self._base_url}/models/{model}"
         headers = {"x-goog-api-key": self._api_key}
         try:
             with httpx.Client(timeout=10) as client:
-                resp = client.get(url, headers=headers)
+                self._cancellation_token.set_active_client(client)
+                try:
+                    resp = client.get(url, headers=headers)
+                finally:
+                    self._cancellation_token.clear_active_client(client)
+            self._cancellation_token.raise_if_cancelled()
             if resp.is_success:
                 logger.info("模型可用: %s", model)
                 return True
             logger.warning("模型不可用: %s (HTTP %d)", model, resp.status_code)
             return False
         except (httpx.TimeoutException, httpx.RequestError) as e:
+            if self._cancellation_token.is_cancelled:
+                raise RequestCancelled("Request cancelled") from e
             logger.warning("模型探测失败: %s (%s)", model, e)
             return False
 
@@ -177,6 +197,7 @@ class GeminiClient:
         logger.info("=== 探测可用模型 ===")
         available: list[str] = []
         for m in candidates:
+            self._cancellation_token.raise_if_cancelled()
             if self._check_model_available(m):
                 available.append(m)
 
@@ -195,6 +216,7 @@ class GeminiClient:
         last_error: GeminiClientError | None = None
 
         for model in models:
+            self._cancellation_token.raise_if_cancelled()
             try:
                 return self._try_model(prompt, model)
             except GeminiClientError as e:
@@ -212,6 +234,8 @@ class GeminiClient:
 
     def _try_model(self, prompt: dict, model: str) -> dict:
         """用指定模型调用 generateContent，包含 5xx 重试逻辑。"""
+        self._cancellation_token.raise_if_cancelled()
+        settings.validate_gemini_api_key(self._api_key)
         self._current_model = model
         url = f"{self._base_url}/models/{model}:generateContent"
         headers = {
@@ -224,9 +248,15 @@ class GeminiClient:
         logger.debug("请求体: %s", json.dumps(body, ensure_ascii=False)[:500])
 
         for attempt in range(self._max_retries):
+            self._cancellation_token.raise_if_cancelled()
             try:
                 with httpx.Client(timeout=self._timeout) as client:
-                    response = client.post(url, headers=headers, json=body)
+                    self._cancellation_token.set_active_client(client)
+                    try:
+                        response = client.post(url, headers=headers, json=body)
+                    finally:
+                        self._cancellation_token.clear_active_client(client)
+                self._cancellation_token.raise_if_cancelled()
 
                 if response.is_success:
                     return response.json()
@@ -239,19 +269,23 @@ class GeminiClient:
 
                 # 其他 5xx 服务器错误：重试
                 if attempt < self._max_retries - 1:
-                    time.sleep(self._retry_delay)
+                    self._cancellation_token.wait(self._retry_delay)
                     continue
                 raise GeminiClientError(response.status_code, response.text)
 
             except httpx.TimeoutException:
+                if self._cancellation_token.is_cancelled:
+                    raise RequestCancelled("Request cancelled")
                 if attempt < self._max_retries - 1:
-                    time.sleep(self._retry_delay)
+                    self._cancellation_token.wait(self._retry_delay)
                     continue
                 raise GeminiClientError(408, "请求超时")
 
             except httpx.RequestError as e:
+                if self._cancellation_token.is_cancelled:
+                    raise RequestCancelled("Request cancelled") from e
                 if attempt < self._max_retries - 1:
-                    time.sleep(self._retry_delay)
+                    self._cancellation_token.wait(self._retry_delay)
                     continue
                 raise GeminiClientError(0, str(e))
 

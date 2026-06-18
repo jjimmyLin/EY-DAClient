@@ -5,6 +5,8 @@ Global API settings dialog.
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -14,6 +16,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -201,17 +204,49 @@ class ApiSettingsDialog(QDialog):
             self._provider_stack.setCurrentIndex(0)
             provider = "dify"
 
+        devops_api_key = self._devops_api_key.text().strip()
+        dify_base_url = self._dify_base_url.text().strip().rstrip("/")
+        if not self._valid_base_url(dify_base_url):
+            QMessageBox.warning(
+                self,
+                "Invalid Base URL",
+                "Enter the Dify API base URL, for example "
+                "https://host.example/v1. Do not include /workflows/run.",
+            )
+            self._dify_base_url.setFocus()
+            return
+
+        try:
+            dify_timeout = self._positive_integer(
+                self._dify_timeout.text(),
+                "Dify timeout",
+            )
+            devops_timeout = self._positive_integer(
+                self._devops_timeout.text(),
+                "DevOps timeout",
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid timeout", str(exc))
+            return
+
+        if provider == "gemini":
+            try:
+                settings.validate_gemini_api_key(devops_api_key)
+            except ValueError as exc:
+                QMessageBox.warning(self, "Invalid API key", str(exc))
+                self._devops_api_key.setFocus()
+                return
+
         updates = {
             "LLM_PROVIDER": provider,
             "DIFY_API_KEY": self._dify_api_key.text().strip(),
-            "DIFY_BASE_URL": self._dify_base_url.text().strip(),
-            "DIFY_TIMEOUT": self._dify_timeout.text().strip(),
-            "GEMINI_API_KEY": self._devops_api_key.text().strip(),
+            "DIFY_BASE_URL": dify_base_url,
+            "DIFY_TIMEOUT": str(dify_timeout),
+            "GEMINI_API_KEY": devops_api_key,
             "GEMINI_MODEL": "gemini-3.5-flash",
             "GEMINI_BASE_URL": self._devops_base_url.text().strip(),
-            "GEMINI_TIMEOUT": self._devops_timeout.text().strip(),
+            "GEMINI_TIMEOUT": str(devops_timeout),
         }
-        updates = {key: value for key, value in updates.items() if value != ""}
         settings.write_non_secret_env(updates)
 
         settings.reload()
@@ -221,6 +256,25 @@ class ApiSettingsDialog(QDialog):
         )
         self.settings_saved.emit()
         self.accept()
+
+    @staticmethod
+    def _positive_integer(value: str, label: str) -> int:
+        try:
+            number = int(value.strip())
+        except ValueError as exc:
+            raise ValueError(f"{label} must be a whole number.") from exc
+        if number <= 0:
+            raise ValueError(f"{label} must be greater than zero.")
+        return number
+
+    @staticmethod
+    def _valid_base_url(value: str) -> bool:
+        parsed = urlparse(value)
+        return (
+            parsed.scheme in {"http", "https"}
+            and bool(parsed.netloc)
+            and not parsed.path.rstrip("/").endswith("/workflows/run")
+        )
 
     def _apply_style(self) -> None:
         self.setStyleSheet("""
