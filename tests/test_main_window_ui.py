@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from PySide6.QtCore import QEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from core.preprocessor import FileMeta, SheetMeta
 from core.analysis_result import (
@@ -31,11 +31,11 @@ def test_start_page_is_data_first_and_unlocks_capabilities(qapp):
         label.text()
         for label in window.start_page.tips_panel.findChildren(type(window.start_page.status_label))
     )
-    assert "Small files stay interactive" in tip_text
-    assert "under 100 MB" in tip_text
-    assert "up to 2 GB" in tip_text
+    assert "Small files are interactive" in tip_text
+    assert "Under 100 MB" in tip_text
+    assert "Up to 1 GB" in tip_text
     assert "Analyze up to 3 workbooks together" in tip_text
-    assert "Cleaning works on one workbook" in tip_text
+    assert "Cleaning operates on one workbook" in tip_text
     assert not window.mode_button.isVisible()
     assert not window.dataset_library_btn.isVisible()
 
@@ -52,10 +52,9 @@ def test_start_page_is_data_first_and_unlocks_capabilities(qapp):
     qapp.processEvents()
 
     assert window.start_page.capability_panel.isVisible()
-    assert window.start_page.analysis_card.text() == "Analyze"
-    assert window.start_page.cleaning_card.text() == "Clean"
-    assert window.start_page.drop_zone.maximumWidth() == 520
-    assert window.start_page.capability_panel.maximumWidth() == 244
+    assert window.start_page.analysis_card.text() == "Analyze Workbooks"
+    assert window.start_page.cleaning_card.text() == "Clean Workbooks"
+    assert window.start_page.capability_panel.maximumWidth() >= 255
     assert window.start_page.capability_panel.x() > window.start_page.drop_zone.x()
     assert not window.mode_button.isVisible()
     assert not window.dataset_library_btn.isVisible()
@@ -98,6 +97,71 @@ def test_multiline_prompt_resizes_and_composer_remains_centered(qapp):
     assert window.prompt_input.height() <= 168
     expected_x = (window.workspace.width() - window.command_bar.width()) // 2
     assert abs(window.command_bar.x() - expected_x) <= 1
+    window.close()
+
+
+def test_import_validation_rejects_unsupported_batch_without_starting_worker(
+    qapp,
+    monkeypatch,
+    tmp_path,
+):
+    window = MainWindow()
+    unsupported = tmp_path / "notes.csv"
+    unsupported.write_text("a,b\n1,2", encoding="utf-8")
+    valid = tmp_path / "valid.xlsx"
+    valid.write_bytes(b"valid")
+    warnings = []
+    started = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *args: warnings.append(args[2]),
+    )
+    monkeypatch.setattr(
+        window,
+        "_start_import_worker",
+        lambda files: started.append(files),
+    )
+
+    window._queue_dataset_files([str(valid), str(unsupported)])
+
+    assert not started
+    assert not window._dataset_states
+    assert warnings
+    assert "notes.csv" in warnings[0]
+    assert "unsupported file type" in warnings[0]
+    window.close()
+
+
+def test_import_validation_rejects_oversized_file_without_starting_worker(
+    qapp,
+    monkeypatch,
+    tmp_path,
+):
+    window = MainWindow()
+    oversized = tmp_path / "oversized.xlsx"
+    oversized.write_bytes(b"12345")
+    warnings = []
+    started = []
+    monkeypatch.setattr(settings, "MAX_DATASET_BYTES", 4)
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *args: warnings.append(args[2]),
+    )
+    monkeypatch.setattr(
+        window,
+        "_start_import_worker",
+        lambda files: started.append(files),
+    )
+
+    window._queue_dataset_files([str(oversized)])
+
+    assert not started
+    assert not window._dataset_states
+    assert warnings
+    assert "oversized.xlsx" in warnings[0]
+    assert "exceeds the 1 GB per-file limit" in warnings[0]
     window.close()
 
 

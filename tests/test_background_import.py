@@ -16,7 +16,7 @@ def test_preprocessor_rejects_files_over_configured_limit(
     workbook.write_bytes(b"x" * 16)
     monkeypatch.setattr(settings, "MAX_DATASET_BYTES", 8)
 
-    with pytest.raises(ValueError, match="2 GiB"):
+    with pytest.raises(ValueError, match="1 GiB"):
         Preprocessor().process(str(workbook))
 
 

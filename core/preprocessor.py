@@ -136,7 +136,7 @@ class Preprocessor:
 
         size_bytes = path.stat().st_size
         if size_bytes > settings.MAX_DATASET_BYTES:
-            raise ValueError("File exceeds the 2 GiB per-dataset limit.")
+            raise ValueError("File exceeds the 1 GiB per-dataset limit.")
 
         self._raise_if_cancelled(cancel_callback)
         settings.DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)

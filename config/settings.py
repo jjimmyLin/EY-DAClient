@@ -73,7 +73,7 @@ class Settings:
     LARGE_DATASET_ROWS = int(os.getenv("LARGE_DATASET_ROWS", "100000"))
     LARGE_EXCEL_MB = int(os.getenv("LARGE_EXCEL_MB", "20"))
     MAX_DATASET_BYTES = int(
-        os.getenv("MAX_DATASET_BYTES", str(2 * 1024 * 1024 * 1024))
+        os.getenv("MAX_DATASET_BYTES", str(1 * 1024 * 1024 * 1024))
     )
     MAX_SELECTED_DATASETS = int(os.getenv("MAX_SELECTED_DATASETS", "3"))
     BACKGROUND_ANALYSIS_MB = int(os.getenv("BACKGROUND_ANALYSIS_MB", "100"))

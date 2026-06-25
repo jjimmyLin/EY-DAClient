@@ -60,6 +60,7 @@ from ui.overview_popover import OverviewPopover
 from ui.result_panel import AnalysisResultPanel, RESULT_PANEL_STYLE
 from ui.cleaning_page import CleaningPage, CLEANING_PAGE_STYLE
 from ui.data_portal import DataPortalPage, DATA_PORTAL_STYLE
+from ui.data_portal import SUPPORTED_DATASET_SUFFIXES
 from core.analysis_result import AnalysisResult
 from config.settings import settings
 from workers.analysis_worker import AnalysisWorker
@@ -1109,7 +1110,7 @@ class MainWindow(QMainWindow):
             self,
             "Select Excel Files",
             "",
-            "Excel Files (*.xlsx *.xls);;All Files (*)"
+            "Excel Files (*.xlsx *.xls *.xlsm);;All Files (*)"
         )
         
         if not files:
@@ -1120,19 +1121,49 @@ class MainWindow(QMainWindow):
         from pathlib import Path
 
         if self._import_thread is not None:
-            self.log_output.append(
-                "An import is already running. Add more files after it finishes."
+            QMessageBox.information(
+                self,
+                "Import in progress",
+                "Wait for the current import to finish before adding more files.",
             )
             return
-        accepted = []
+
+        validation_errors = []
+        resolved_files = []
         for file_path in files:
             path = Path(file_path)
-            resolved_path = str(path.resolve())
-            if path.stat().st_size > settings.MAX_DATASET_BYTES:
-                self.log_output.append(
-                    f"Rejected {path.name}: file exceeds the 2 GiB limit."
+            if path.suffix.lower() not in SUPPORTED_DATASET_SUFFIXES:
+                validation_errors.append(
+                    f"• {path.name}: unsupported file type "
+                    "(use .xlsx, .xls, or .xlsm)"
                 )
                 continue
+            try:
+                size_bytes = path.stat().st_size
+            except OSError as exc:
+                validation_errors.append(
+                    f"• {path.name}: file cannot be accessed ({exc})"
+                )
+                continue
+            if size_bytes > settings.MAX_DATASET_BYTES:
+                validation_errors.append(
+                    f"• {path.name}: exceeds the 1 GB per-file limit"
+                )
+                continue
+            resolved_files.append((path, str(path.resolve())))
+
+        if validation_errors:
+            message = (
+                "Nothing was imported because this selection contains "
+                "unsupported files:\n\n"
+                + "\n".join(validation_errors)
+            )
+            QMessageBox.warning(self, "Files cannot be imported", message)
+            self.log_output.append(message.replace("\n", " "))
+            return
+
+        accepted = []
+        for path, resolved_path in resolved_files:
             known_paths = {
                 str(state.get("file_path"))
                 for state in self._dataset_states.values()
