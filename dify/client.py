@@ -69,6 +69,8 @@ class DifyClient:
 
         generated = self.extract_analysis_from_response(response)
         code = generated["code"]
+        if generated.get("clarification_required"):
+            return generated
         self._emit(
             event_callback,
             "content_delta",
@@ -294,17 +296,60 @@ class DifyClient:
                 f"Missing: {', '.join(sorted(missing))}. Available: {available}",
             )
 
+        limits: dict[str, int] = {}
+        for field in fields:
+            try:
+                limits[str(field["variable"])] = int(
+                    field.get("max_length") or 0
+                )
+            except (TypeError, ValueError):
+                limits[str(field["variable"])] = 0
+
+        values = {
+            name: str(prompt.get(name) or "")
+            for name in contract
+        }
+        query_limit = limits.get("query", 0)
+        if query_limit > 0 and len(values["query"]) > query_limit:
+            try:
+                context_payload = json.loads(values["context"])
+            except json.JSONDecodeError as exc:
+                raise DifyClientError(
+                    400,
+                    "Long requests require JSON context so the full query can "
+                    "be transferred without truncation.",
+                ) from exc
+            context_payload["user_query_full"] = values["query"]
+            context_payload["query_transport"] = (
+                "The complete user request is in context.user_query_full."
+            )
+            values["context"] = json.dumps(
+                context_payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            values["query"] = (
+                "Use context.user_query_full as the complete original request."
+            )
+
         inputs: dict[str, str] = {}
         for field in fields:
             name = str(field["variable"])
             if name not in contract:
                 continue
-            value = str(prompt.get(name) or "")
-            raw_max_length = field.get("max_length")
-            try:
-                max_length = int(raw_max_length)
-            except (TypeError, ValueError):
-                max_length = 0
+            value = values[name]
+            max_length = limits.get(name, 0)
+            if (
+                name == "context"
+                and max_length > 0
+                and len(value) > max_length
+            ):
+                from core.prompt_builder import PromptBuilder
+
+                try:
+                    value = PromptBuilder.compact_context(value, max_length)
+                except ValueError as exc:
+                    raise DifyClientError(400, str(exc)) from exc
             if max_length > 0 and len(value) > max_length:
                 raise DifyClientError(
                     400,
@@ -392,10 +437,6 @@ class DifyClient:
             code = outputs
 
         code = code or response.get("answer") or response.get("code") or ""
-        if not code:
-            error = str(data.get("error", "Response did not contain Python code"))
-            raise DifyClientError(400, error)
-
         if isinstance(code, (dict, list)):
             code = json.dumps(code, ensure_ascii=False)
 
@@ -409,9 +450,49 @@ class DifyClient:
         if not isinstance(plan, dict):
             plan = {}
 
+        clarification_required = bool(
+            plan.get("clarification_required")
+            or (
+                isinstance(outputs, dict)
+                and outputs.get("clarification_required")
+            )
+        )
+        clarification_question = str(
+            plan.get("clarification_question")
+            or (
+                outputs.get("clarification_question", "")
+                if isinstance(outputs, dict)
+                else ""
+            )
+            or ""
+        )
+        clarification_options = (
+            plan.get("clarification_options")
+            or (
+                outputs.get("clarification_options", [])
+                if isinstance(outputs, dict)
+                else []
+            )
+            or []
+        )
+        if clarification_required:
+            return {
+                "code": "",
+                "plan": plan,
+                "clarification_required": True,
+                "clarification_question": clarification_question,
+                "clarification_options": clarification_options,
+            }
+        if not code:
+            error = str(data.get("error", "Response did not contain Python code"))
+            raise DifyClientError(400, error)
+
         return {
             "code": self._strip_code_fences(str(code)),
             "plan": plan,
+            "clarification_required": False,
+            "clarification_question": "",
+            "clarification_options": [],
         }
 
     @staticmethod

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import base64
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSequentialAnimationGroup, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QFrame,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -30,6 +31,7 @@ class AnalysisResultPanel(QWidget):
         super().__init__(parent)
         self.setObjectName("analysisResultPanel")
         self._plain_text = ""
+        self._reveal_group: QSequentialAnimationGroup | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -81,6 +83,7 @@ class AnalysisResultPanel(QWidget):
     def set_result(self, result: AnalysisResult) -> None:
         self._clear_layout()
         self._plain_text = result.raw_output or result.summary
+        reveal_widgets: list[QWidget] = []
 
         if result.summary or result.metrics:
             overview_host = QWidget()
@@ -142,9 +145,12 @@ class AnalysisResultPanel(QWidget):
                 overview_layout.addWidget(grid_host, stretch=4)
 
             self.content_layout.addWidget(overview_host)
+            reveal_widgets.append(overview_host)
 
         if result.charts:
-            self.content_layout.addWidget(self._section_label("Visuals"))
+            visuals_label = self._section_label("Visuals")
+            self.content_layout.addWidget(visuals_label)
+            reveal_widgets.append(visuals_label)
             for chart in result.charts:
                 frame = QFrame()
                 frame.setObjectName("resultBlock")
@@ -184,9 +190,12 @@ class AnalysisResultPanel(QWidget):
                     caption.setWordWrap(True)
                     layout.addWidget(caption)
                 self.content_layout.addWidget(frame)
+                reveal_widgets.append(frame)
 
         if result.tables:
-            self.content_layout.addWidget(self._section_label("Tables"))
+            tables_label = self._section_label("Tables")
+            self.content_layout.addWidget(tables_label)
+            reveal_widgets.append(tables_label)
             for table in result.tables:
                 frame = QFrame()
                 frame.setObjectName("resultBlock")
@@ -229,11 +238,16 @@ class AnalysisResultPanel(QWidget):
                 widget.verticalHeader().setDefaultSectionSize(24)
                 layout.addWidget(widget)
                 self.content_layout.addWidget(frame)
+                reveal_widgets.append(frame)
 
         if result.insights:
-            self.content_layout.addWidget(self._section_label("Findings"))
+            findings_label = self._section_label("Findings")
+            self.content_layout.addWidget(findings_label)
+            reveal_widgets.append(findings_label)
             for insight in result.insights:
-                self.content_layout.addWidget(self._insight_row(insight))
+                row = self._insight_row(insight)
+                self.content_layout.addWidget(row)
+                reveal_widgets.append(row)
 
         if result.raw_output and result.raw_output != result.summary:
             details_button = QToolButton()
@@ -257,16 +271,23 @@ class AnalysisResultPanel(QWidget):
             details_button.toggled.connect(toggle_details)
             self.content_layout.addWidget(details_button)
             self.content_layout.addWidget(details)
+            reveal_widgets.extend([details_button, details])
 
         if self.content_layout.count() == 0:
             empty = QLabel("No analysis result is available yet.")
             empty.setObjectName("resultEmpty")
             empty.setAlignment(Qt.AlignCenter)
             self.content_layout.addWidget(empty)
+            reveal_widgets.append(empty)
 
         self.content_layout.addStretch()
+        self._animate_result_reveal(reveal_widgets)
 
     def _clear_layout(self) -> None:
+        if self._reveal_group is not None:
+            self._reveal_group.stop()
+            self._reveal_group.deleteLater()
+            self._reveal_group = None
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
             widget = item.widget()
@@ -274,6 +295,24 @@ class AnalysisResultPanel(QWidget):
                 widget.hide()
                 widget.setParent(None)
                 widget.deleteLater()
+
+    def _animate_result_reveal(self, widgets: list[QWidget]) -> None:
+        reveal_targets = [widget for widget in widgets if widget is not None and widget.isVisible()]
+        if not reveal_targets:
+            return
+        group = QSequentialAnimationGroup(self)
+        for widget in reveal_targets:
+            effect = QGraphicsOpacityEffect(widget)
+            effect.setOpacity(0.0)
+            widget.setGraphicsEffect(effect)
+            animation = QPropertyAnimation(effect, b"opacity", group)
+            animation.setStartValue(0.0)
+            animation.setEndValue(1.0)
+            animation.setDuration(150)
+            animation.setEasingCurve(QEasingCurve.OutCubic)
+            group.addAnimation(animation)
+        self._reveal_group = group
+        group.start()
 
     @staticmethod
     def _section_label(

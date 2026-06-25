@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEasingCurve, QPoint, QTimer, QVariantAnimation, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 def _mix(a: QColor, b: QColor, t: float) -> QColor:
@@ -113,26 +121,52 @@ class DatasetRowWidget(QFrame):
     activated = Signal(str)
     overview_requested = Signal(str)
     delete_requested = Signal(str)
+    selection_changed = Signal(str, bool)
 
     def __init__(self, dataset_name: str, parent=None):
         super().__init__(parent)
         self.dataset_name = dataset_name
         self.setObjectName("datasetRowWidget")
         self._selected = False
+        self._scope_selected = False
+        self._selection_enabled = True
         self._hovered = False
         self._full_text = dataset_name
+        self._state_text = "Waiting"
+        self._state_flash = 0.0
+        self._state_tone = "idle"
 
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(40)
+        self.setFixedHeight(54)
+        self._state_animation = QVariantAnimation(self)
+        self._state_animation.setDuration(220)
+        self._state_animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._state_animation.valueChanged.connect(self._on_state_animation_changed)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 8, 0)
         layout.setSpacing(8)
 
+        self.selection_box = QCheckBox()
+        self.selection_box.setChecked(False)
+        self.selection_box.setToolTip("Include this dataset in analysis")
+        self.selection_box.toggled.connect(
+            lambda checked: self.selection_changed.emit(self.dataset_name, checked)
+        )
+        layout.addWidget(self.selection_box, alignment=Qt.AlignVCenter)
+        self.selection_box.setVisible(False)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(1)
         self.name_label = QLabel()
         self.name_label.setObjectName("datasetRowName")
         self.name_label.setMinimumWidth(0)
-        layout.addWidget(self.name_label, stretch=1)
+        self.state_label = QLabel(self._state_text)
+        self.state_label.setObjectName("datasetRowState")
+        text_layout.addWidget(self.name_label)
+        text_layout.addWidget(self.state_label)
+        layout.addLayout(text_layout, stretch=1)
 
         self.overview_button = CircularStatusButton("i")
         self.overview_button.setFixedSize(22, 22)
@@ -161,6 +195,32 @@ class DatasetRowWidget(QFrame):
         self._selected = selected
         self._apply_selection_style()
 
+    def setAnalysisSelected(self, selected: bool) -> None:
+        self._scope_selected = selected
+        self.selection_box.blockSignals(True)
+        self.selection_box.setChecked(selected)
+        self.selection_box.blockSignals(False)
+        self._apply_selection_style()
+
+    def setSelectionEnabled(self, enabled: bool, tooltip: str = "") -> None:
+        self._selection_enabled = enabled
+        self.selection_box.setEnabled(enabled)
+        self.setToolTip(tooltip)
+
+    def setDatasetState(self, text: str) -> None:
+        self._state_text = text
+        self.state_label.setText(text)
+        lowered = text.lower()
+        if "failed" in lowered or "cancel" in lowered:
+            tone = "error"
+        elif "ready" in lowered or "sampled" in lowered or "rows" in lowered:
+            tone = "success"
+        elif "inspect" in lowered or "cache" in lowered or "profil" in lowered:
+            tone = "working"
+        else:
+            tone = "idle"
+        self._animate_state_tone(tone)
+
     def setBusy(self, busy: bool) -> None:
         if busy:
             self.overview_button.setGlyph("i")
@@ -183,14 +243,14 @@ class DatasetRowWidget(QFrame):
         self.overview_button.setVisible(True)
 
     def setRetry(self, tooltip: str) -> None:
-        self.overview_button.setGlyph("↻")
+        self.overview_button.setGlyph("\u21bb")
         self.overview_button.setBusy(False)
         self.overview_button.setEnabled(True)
         self.overview_button.setToolTip(tooltip)
         self.overview_button.setVisible(True)
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.LeftButton and self._selection_enabled:
             self.activated.emit(self.dataset_name)
         super().mousePressEvent(event)
 
@@ -216,87 +276,130 @@ class DatasetRowWidget(QFrame):
         )
 
     def _apply_selection_style(self) -> None:
-        if self._selected:
+        selected_bg = _mix(
+            QColor("#EFF6FF"),
+            QColor("#DBEAFE"),
+            self._state_flash if self._state_tone == "success" else 0.0,
+        )
+        hover_bg = _mix(
+            QColor("#F8FAFC"),
+            QColor("#E0F2FE"),
+            self._state_flash if self._state_tone == "working" else 0.0,
+        )
+        idle_state = QColor("#94A3B8")
+        if self._state_tone == "working":
+            idle_state = _mix(QColor("#94A3B8"), QColor("#2563EB"), self._state_flash)
+        elif self._state_tone == "error":
+            idle_state = _mix(QColor("#94A3B8"), QColor("#DC2626"), self._state_flash)
+        elif self._state_tone == "success":
+            idle_state = _mix(QColor("#94A3B8"), QColor("#059669"), self._state_flash)
+        state_hex = idle_state.name()
+
+        if self._scope_selected:
             self.setStyleSheet(
                 """
-                QFrame#datasetRowWidget {
-                    background-color: #EFF6FF;
-                    border: 1px solid #BFDBFE;
+                QFrame#datasetRowWidget {{
+                    background-color: {selected_bg};
+                    border: 2px solid #8AB4F8;
                     border-radius: 12px;
-                }
-                QLabel#datasetRowName {
+                }}
+                QLabel#datasetRowName {{
                     color: #1D4ED8;
                     font-size: 12px;
                     font-weight: 600;
-                }
-                QPushButton#datasetDeleteButton {
+                }}
+                QLabel#datasetRowState {{
+                    color: #64748B;
+                    font-size: 10px;
+                }}
+                QPushButton#datasetDeleteButton {{
                     color: #64748B;
                     background-color: transparent;
                     border: none;
                     border-radius: 10px;
                     font-size: 14px;
                     font-weight: 400;
-                }
-                QPushButton#datasetDeleteButton:hover {
+                }}
+                QPushButton#datasetDeleteButton:hover {{
                     color: #B42318;
                     background-color: #FEE4E2;
-                }
-                """
+                }}
+                """.format(selected_bg=selected_bg.name())
             )
-        elif self._hovered:
+        elif self._selected or self._hovered:
             self.setStyleSheet(
                 """
-                QFrame#datasetRowWidget {
-                    background-color: #F8FAFC;
+                QFrame#datasetRowWidget {{
+                    background-color: {hover_bg};
                     border: 1px solid #E5E7EB;
                     border-radius: 12px;
-                }
-                QLabel#datasetRowName {
+                }}
+                QLabel#datasetRowName {{
                     color: #1F2937;
                     font-size: 12px;
                     font-weight: 500;
-                }
-                QPushButton#datasetDeleteButton {
+                }}
+                QLabel#datasetRowState {{
+                    color: {state_hex};
+                    font-size: 10px;
+                }}
+                QPushButton#datasetDeleteButton {{
                     color: #64748B;
                     background-color: transparent;
                     border: none;
                     border-radius: 10px;
                     font-size: 14px;
                     font-weight: 400;
-                }
-                QPushButton#datasetDeleteButton:hover {
+                }}
+                QPushButton#datasetDeleteButton:hover {{
                     color: #B42318;
                     background-color: #FEE4E2;
-                }
-                """
+                }}
+                """.format(hover_bg=hover_bg.name(), state_hex=state_hex)
             )
         else:
             self.setStyleSheet(
                 """
-                QFrame#datasetRowWidget {
+                QFrame#datasetRowWidget {{
                     background-color: transparent;
                     border: 1px solid transparent;
                     border-radius: 12px;
-                }
-                QLabel#datasetRowName {
+                }}
+                QLabel#datasetRowName {{
                     color: #374151;
                     font-size: 12px;
                     font-weight: 500;
-                }
-                QPushButton#datasetDeleteButton {
+                }}
+                QLabel#datasetRowState {{
+                    color: {state_hex};
+                    font-size: 10px;
+                }}
+                QPushButton#datasetDeleteButton {{
                     color: #94A3B8;
                     background-color: transparent;
                     border: none;
                     border-radius: 10px;
                     font-size: 14px;
                     font-weight: 400;
-                }
-                QPushButton#datasetDeleteButton:hover {
+                }}
+                QPushButton#datasetDeleteButton:hover {{
                     color: #B42318;
                     background-color: #FEE4E2;
-                }
-                """
+                }}
+                """.format(state_hex=state_hex)
             )
+
+    def _animate_state_tone(self, tone: str) -> None:
+        self._state_tone = tone
+        self._state_animation.stop()
+        self._state_animation.setStartValue(0.0)
+        self._state_animation.setEndValue(1.0)
+        self._state_animation.start()
+
+    def _on_state_animation_changed(self, value) -> None:
+        pulse = float(value)
+        self._state_flash = 1.0 - abs(1.0 - pulse * 2.0)
+        self._apply_selection_style()
 
 
 class SuggestionPopover(QFrame):

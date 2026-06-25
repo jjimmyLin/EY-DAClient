@@ -54,6 +54,21 @@ def user_log_dir() -> Path:
     return project_root() / "logs"
 
 
+def user_cache_dir() -> Path:
+    """Directory for reusable local dataset caches."""
+    if is_frozen() and sys.platform.startswith("win"):
+        return _windows_local_dir() / "cache"
+    return project_root() / ".cache"
+
+
+def dataset_cache_dir() -> Path:
+    return user_cache_dir() / "datasets"
+
+
+def duckdb_temp_dir() -> Path:
+    return user_cache_dir() / "duckdb-temp"
+
+
 def env_file() -> Path:
     """Resolved .env location used by both readers and writers."""
     return user_config_dir() / ".env"

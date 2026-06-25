@@ -18,6 +18,13 @@ def _json_value(value: Any) -> Any:
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {
+            str(key): _json_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [_json_value(item) for item in value]
     if hasattr(value, "item"):
         try:
             return _json_value(value.item())
@@ -69,6 +76,8 @@ class AnalysisResult:
     tables: list[TableResult] = field(default_factory=list)
     charts: list[ChartResult] = field(default_factory=list)
     insights: list[InsightResult] = field(default_factory=list)
+    audit: list[dict[str, Any]] = field(default_factory=list)
+    completed_requirements: list[str] = field(default_factory=list)
     raw_output: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,6 +107,16 @@ class AnalysisResult:
                 InsightResult(**item)
                 for item in payload.get("insights", [])
                 if isinstance(item, dict)
+            ],
+            audit=[
+                item
+                for item in payload.get("audit", [])
+                if isinstance(item, dict)
+            ],
+            completed_requirements=[
+                str(item)
+                for item in payload.get("completed_requirements", [])
+                if str(item).strip()
             ],
             raw_output=str(payload.get("raw_output") or ""),
         )
@@ -249,6 +268,24 @@ class ResultCollector:
         self._result.insights.append(
             InsightResult(str(title), str(detail), "warning")
         )
+
+    def mark_requirement(self, requirement_id: Any) -> None:
+        value = str(requirement_id).strip()
+        if value and value not in self._result.completed_requirements:
+            self._result.completed_requirements.append(value)
+
+    def add_audit(self, record: dict[str, Any]) -> None:
+        if isinstance(record, dict):
+            self._result.audit.append(
+                {
+                    str(key): _json_value(value)
+                    for key, value in record.items()
+                }
+            )
+
+    def extend_audit(self, records: Any) -> None:
+        for record in records or []:
+            self.add_audit(record)
 
     def capture_open_figures(self, pyplot: Any) -> None:
         for figure_number in pyplot.get_fignums():

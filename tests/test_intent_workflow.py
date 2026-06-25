@@ -11,15 +11,22 @@ from dify.workflow import AnalysisWorkflow
 
 
 class FakeClient:
-    def __init__(self, responses):
+    def __init__(self, responses, plan=None):
         self.responses = list(responses)
         self.prompts = []
+        self.plan = plan or {}
 
     def generate_code(self, prompt: dict, event_callback=None) -> str:
         self.prompts.append(prompt)
         if not self.responses:
             raise AssertionError("FakeClient has no queued response")
         return self.responses.pop(0)
+
+    def generate_analysis(self, prompt: dict, event_callback=None) -> dict:
+        return {
+            "code": self.generate_code(prompt, event_callback),
+            "plan": self.plan,
+        }
 
 
 def _write_demo_workbook(path):
@@ -38,6 +45,35 @@ def _files_meta(tmp_path):
     workbook = tmp_path / "TEST.xlsx"
     _write_demo_workbook(workbook)
     return [Preprocessor().process(str(workbook))]
+
+
+def _analysis_plan(files_meta, columns=None):
+    file_meta = files_meta[0]
+    sheet = file_meta.sheets[0]
+    return {
+        "task_summary": "Test analysis",
+        "requirements": [
+            {
+                "id": "R1",
+                "objective": "Complete the requested analysis",
+                "sources": [
+                    {
+                        "dataset_id": file_meta.runtime_key,
+                        "sheet_id": sheet.sheet_id,
+                        "columns": columns or ["price", "quantity"],
+                    }
+                ],
+                "joins": [],
+                "grain": "source row",
+                "formula": "Defined by the request",
+                "output_type": "metric",
+            }
+        ],
+        "warnings": [],
+        "clarification_required": False,
+        "clarification_question": "",
+        "clarification_options": [],
+    }
 
 
 def test_preprocessor_adds_bounded_unique_value_evidence(tmp_path):
@@ -62,17 +98,22 @@ def test_analysis_prompt_uses_direct_code_generation_contract(tmp_path):
     assert prompt["task_type"] == "analysis"
     assert prompt["query"] == query.strip()
     assert len(prompt["query"]) > 256
-    assert '"metric": "revenue"' in prompt["context"]
+    assert '"metric":"revenue"' in prompt["context"]
     assert "TEST.xlsx" in prompt["context"]
 
 
 def test_workflow_generates_code_from_single_backend_call(tmp_path, monkeypatch):
+    files_meta = _files_meta(tmp_path)
+    dataset_id = files_meta[0].runtime_key
+    sheet_id = files_meta[0].sheets[0].sheet_id
     code = (
-        'df = dfs["TEST.xlsx"]["Sheet1"]\n'
+        f'ANALYSIS_SPEC = {{"requirements": ["R1"], "datasets": ["{dataset_id}"]}}\n'
+        f'df = data.get("{dataset_id}", "{sheet_id}")\n'
         'print("rows:", len(df))\n'
-        'print("total:", (df["price"] * df["quantity"]).sum())'
+        'print("total:", (df["price"] * df["quantity"]).sum())\n'
+        'result.mark_requirement("R1")'
     )
-    fake = FakeClient([code])
+    fake = FakeClient([code], _analysis_plan(files_meta))
     monkeypatch.setattr(
         workflow_module,
         "get_client",
@@ -80,7 +121,7 @@ def test_workflow_generates_code_from_single_backend_call(tmp_path, monkeypatch)
     )
 
     result = AnalysisWorkflow().generate_only(
-        _files_meta(tmp_path),
+        files_meta,
         "Calculate total revenue",
     )
 
@@ -91,7 +132,11 @@ def test_workflow_generates_code_from_single_backend_call(tmp_path, monkeypatch)
 
 
 def test_workflow_blocks_unsafe_generated_code(tmp_path, monkeypatch):
-    fake = FakeClient(["import os\nprint(os.getcwd())"])
+    files_meta = _files_meta(tmp_path)
+    fake = FakeClient(
+        ["import os\nprint(os.getcwd())"],
+        _analysis_plan(files_meta),
+    )
     monkeypatch.setattr(
         workflow_module,
         "get_client",
@@ -99,7 +144,7 @@ def test_workflow_blocks_unsafe_generated_code(tmp_path, monkeypatch):
     )
 
     result = AnalysisWorkflow().generate_only(
-        _files_meta(tmp_path),
+        files_meta,
         "Show working directory",
     )
 
@@ -108,20 +153,25 @@ def test_workflow_blocks_unsafe_generated_code(tmp_path, monkeypatch):
 
 
 def test_workflow_run_executes_generated_code_locally(tmp_path, monkeypatch):
+    files_meta = _files_meta(tmp_path)
+    dataset_id = files_meta[0].runtime_key
+    sheet_id = files_meta[0].sheets[0].sheet_id
     code = (
-        'df = dfs["TEST.xlsx"]["Sheet1"]\n'
+        f'ANALYSIS_SPEC = {{"requirements": ["R1"], "datasets": ["{dataset_id}"]}}\n'
+        f'df = data.get("{dataset_id}", "{sheet_id}")\n'
         'valid = df[df["price"].notna()]\n'
         'print("audited columns: price, quantity")\n'
-        'print("total:", (valid["price"] * valid["quantity"]).sum())'
+        'print("total:", (valid["price"] * valid["quantity"]).sum())\n'
+        'result.mark_requirement("R1")'
     )
-    fake = FakeClient([code])
+    fake = FakeClient([code], _analysis_plan(files_meta))
     monkeypatch.setattr(
         workflow_module,
         "get_client",
         lambda cancellation_token=None: fake,
     )
 
-    result = AnalysisWorkflow().run(_files_meta(tmp_path), "Calculate total revenue")
+    result = AnalysisWorkflow().run(files_meta, "Calculate total revenue")
 
     assert result.success
     assert result.execution is not None
@@ -133,8 +183,12 @@ def test_workflow_repairs_runtime_error_and_revalidates_locally(
     tmp_path,
     monkeypatch,
 ):
-    broken_code = """
-df = dfs["TEST.xlsx"]["Sheet1"]
+    files_meta = _files_meta(tmp_path)
+    dataset_id = files_meta[0].runtime_key
+    sheet_id = files_meta[0].sheets[0].sheet_id
+    broken_code = f"""
+ANALYSIS_SPEC = {{"requirements": ["R1"], "datasets": ["{dataset_id}"]}}
+df = data.get("{dataset_id}", "{sheet_id}")
 summary = (
     df.groupby("product", as_index=False)["quantity"]
     .sum()
@@ -142,9 +196,11 @@ summary = (
 )
 summary.columns = ["product", "quantity"]
 result.add_table("Quantity", dataframe=summary)
+result.mark_requirement("R1")
 """
-    repaired_code = """
-df = dfs["TEST.xlsx"]["Sheet1"]
+    repaired_code = f"""
+ANALYSIS_SPEC = {{"requirements": ["R1"], "datasets": ["{dataset_id}"]}}
+df = data.get("{dataset_id}", "{sheet_id}")
 summary = (
     df.groupby("product", as_index=False)["quantity"]
     .sum()
@@ -152,8 +208,12 @@ summary = (
 )
 result.set_summary("Repair completed.")
 result.add_table("Quantity", dataframe=summary)
+result.mark_requirement("R1")
 """
-    fake = FakeClient([broken_code, repaired_code])
+    fake = FakeClient(
+        [broken_code, repaired_code],
+        _analysis_plan(files_meta, ["product", "quantity"]),
+    )
     monkeypatch.setattr(
         workflow_module,
         "get_client",
@@ -161,7 +221,7 @@ result.add_table("Quantity", dataframe=summary)
     )
 
     result = AnalysisWorkflow().prepare_analysis(
-        _files_meta(tmp_path),
+        files_meta,
         "Summarize quantity by product",
     )
 
@@ -241,12 +301,14 @@ def test_code_validator_blocks_file_io_and_unsafe_runtime_access():
 
 def test_execute_only_revalidates_user_edited_code(tmp_path):
     workflow = AnalysisWorkflow()
+    files_meta = _files_meta(tmp_path)
 
     result = workflow.execute_only(
         "pd.read_excel('C:/secret.xlsx')",
-        _files_meta(tmp_path),
+        files_meta,
+        analysis_plan=_analysis_plan(files_meta),
     )
 
     assert not result.success
     assert result.execution is None
-    assert "安全检查失败" in result.error
+    assert "read_excel" in result.error

@@ -1,35 +1,36 @@
-"""
-config/settings.py
-──────────────────
-中央配置管理。所有模块从这里读取配置。
-"""
+"""Central runtime settings loaded from the resolved .env file."""
+
+from __future__ import annotations
 
 import os
+
 from dotenv import load_dotenv
+
 from config.devops_access import DEVOPS_DENIED_MESSAGE, is_devops_machine
-from config.runtime_paths import app_log_file, env_file, project_root
+from config.runtime_paths import (
+    app_log_file,
+    dataset_cache_dir,
+    duckdb_temp_dir,
+    env_file,
+    project_root,
+)
+
 
 ENV_FILE = env_file()
-
-# 加载明确解析后的 .env，确保 UI 写入和运行时读取是同一个文件。
 load_dotenv(dotenv_path=ENV_FILE, override=True)
 
 
 class Settings:
-    """应用全局配置"""
-    
-    # ── 项目路径 ──────────────────────────────────────────
+    """Application-wide configuration surface."""
+
     PROJECT_ROOT = project_root()
     ENV_FILE = ENV_FILE
 
-    # ── LLM 提供商选择 ─────────────────────────────────────
-    # 可选值: "dify" (默认), "gemini"
     VALID_LLM_PROVIDERS = ("dify", "gemini")
     LLM_PROVIDER = os.getenv("LLM_PROVIDER", "dify").strip().lower()
     if LLM_PROVIDER == "gemini" and not is_devops_machine():
         LLM_PROVIDER = "dify"
 
-    # ── Dify 配置 ──────────────────────────────────────────
     DIFY_BASE_URL = os.getenv(
         "DIFY_BASE_URL",
         "https://ai-platform-uat.ey.net/v1",
@@ -37,7 +38,6 @@ class Settings:
     DIFY_API_KEY = os.getenv("DIFY_API_KEY", "")
     DIFY_TIMEOUT = int(os.getenv("DIFY_TIMEOUT", "60"))
 
-    # ── Gemini (Google AI Studio) 配置 ─────────────────────
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
     GEMINI_BASE_URL = os.getenv(
@@ -47,79 +47,123 @@ class Settings:
     GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "120"))
     GEMINI_THINKING_BUDGET = int(os.getenv("GEMINI_THINKING_BUDGET", "2048"))
     GEMINI_MODEL_FALLBACKS = [
-        m.strip()
-        for m in os.getenv(
+        value.strip()
+        for value in os.getenv(
             "GEMINI_MODEL_FALLBACKS",
-            "gemini-3.5-flash,gemini-2.5-flash,gemini-2.5-pro,gemini-2.0-flash,gemini-2.0-flash-lite",
+            (
+                "gemini-3.5-flash,gemini-2.5-flash,gemini-2.5-pro,"
+                "gemini-2.0-flash,gemini-2.0-flash-lite"
+            ),
         ).split(",")
-        if m.strip()
+        if value.strip()
     ]
     GEMINI_THINKING_MODELS = ("gemini-2.5-",)
     GEMINI_THINKING_LEVEL = os.getenv("GEMINI_THINKING_LEVEL", "").strip().lower()
 
-    # ── 代码执行沙箱配置 ───────────────────────────────────
     EXEC_TIMEOUT_SEC = int(os.getenv("EXEC_TIMEOUT_SEC", "30"))
     EXEC_MAX_MEM_MB = int(os.getenv("EXEC_MAX_MEM_MB", "512"))
+    BACKGROUND_EXEC_MAX_MEM_MB = int(
+        os.getenv("BACKGROUND_EXEC_MAX_MEM_MB", "4096")
+    )
+    BACKGROUND_EXEC_TIMEOUT_SEC = int(
+        os.getenv("BACKGROUND_EXEC_TIMEOUT_SEC", "3600")
+    )
     MAX_CODE_RETRIES = int(os.getenv("MAX_CODE_RETRIES", "3"))
-    
-    # ── 预处理配置 ─────────────────────────────────────────
+    SAMPLE_ROWS_PER_SHEET = int(os.getenv("SAMPLE_ROWS_PER_SHEET", "5000"))
+    LARGE_DATASET_ROWS = int(os.getenv("LARGE_DATASET_ROWS", "100000"))
+    LARGE_EXCEL_MB = int(os.getenv("LARGE_EXCEL_MB", "20"))
+    MAX_DATASET_BYTES = int(
+        os.getenv("MAX_DATASET_BYTES", str(2 * 1024 * 1024 * 1024))
+    )
+    MAX_SELECTED_DATASETS = int(os.getenv("MAX_SELECTED_DATASETS", "3"))
+    BACKGROUND_ANALYSIS_MB = int(os.getenv("BACKGROUND_ANALYSIS_MB", "100"))
+    BACKGROUND_ANALYSIS_ROWS = int(
+        os.getenv("BACKGROUND_ANALYSIS_ROWS", "300000")
+    )
+
     PREVIEW_ROWS = int(os.getenv("PREVIEW_ROWS", "5"))
     MAX_COLS_DESCRIBE = int(os.getenv("MAX_COLS_DESCRIBE", "30"))
-    
-    # ── UI 配置 ────────────────────────────────────────────
+    DATASET_CACHE_DIR = dataset_cache_dir()
+    DUCKDB_TEMP_DIR = duckdb_temp_dir()
+    IMPORT_BATCH_ROWS = int(os.getenv("IMPORT_BATCH_ROWS", "20000"))
+    IMPORT_SCHEMA_SAMPLE_ROWS = int(os.getenv("IMPORT_SCHEMA_SAMPLE_ROWS", "2000"))
+    IMPORT_ROW_GROUP_SIZE = int(os.getenv("IMPORT_ROW_GROUP_SIZE", "50000"))
+    IMPORT_MIN_FREE_DISK_BYTES = int(
+        os.getenv("IMPORT_MIN_FREE_DISK_BYTES", str(10 * 1024 * 1024 * 1024))
+    )
+    IMPORT_SOURCE_SIZE_MULTIPLIER = float(
+        os.getenv("IMPORT_SOURCE_SIZE_MULTIPLIER", "8")
+    )
+    IMPORT_UNCOMPRESSED_MULTIPLIER = float(
+        os.getenv("IMPORT_UNCOMPRESSED_MULTIPLIER", "1.5")
+    )
+    CLEANING_MIN_FREE_DISK_BYTES = int(
+        os.getenv("CLEANING_MIN_FREE_DISK_BYTES", str(4 * 1024 * 1024 * 1024))
+    )
+    CLEANING_SOURCE_SIZE_MULTIPLIER = float(
+        os.getenv("CLEANING_SOURCE_SIZE_MULTIPLIER", "3")
+    )
+    MAX_PROFILE_UNIQUES = int(os.getenv("MAX_PROFILE_UNIQUES", "30"))
+
+    DUCKDB_THREADS = int(os.getenv("DUCKDB_THREADS", "4"))
+    DUCKDB_MEMORY_LIMIT = os.getenv("DUCKDB_MEMORY_LIMIT", "4GB")
+    DUCKDB_MAX_TEMP_SIZE = os.getenv("DUCKDB_MAX_TEMP_SIZE", "40GB")
+    DUCKDB_PRESERVE_INSERTION_ORDER = os.getenv(
+        "DUCKDB_PRESERVE_INSERTION_ORDER",
+        "false",
+    ).strip().lower()
+    MAX_QUERY_RESULT_ROWS = int(os.getenv("MAX_QUERY_RESULT_ROWS", "10000"))
+    LARGE_DATASET_COLUMN_GUARD = int(
+        os.getenv("LARGE_DATASET_COLUMN_GUARD", "12")
+    )
+
     WINDOW_WIDTH = int(os.getenv("WINDOW_WIDTH", "1000"))
     WINDOW_HEIGHT = int(os.getenv("WINDOW_HEIGHT", "600"))
-    
-    # ── 日志配置 ───────────────────────────────────────────
+
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     LOG_FILE = app_log_file()
-    
+
     @classmethod
     def validate_provider_name(cls) -> None:
-        """只验证 provider 名称，允许缺少 API key 时进入 UI 设置。"""
         if cls.LLM_PROVIDER not in cls.VALID_LLM_PROVIDERS:
             raise EnvironmentError(
-                f"❌ 未知的 LLM_PROVIDER: {cls.LLM_PROVIDER!r}。"
-                f"请设置为 {', '.join(cls.VALID_LLM_PROVIDERS)}。"
+                f"Unknown LLM_PROVIDER: {cls.LLM_PROVIDER!r}. "
+                f"Expected one of: {', '.join(cls.VALID_LLM_PROVIDERS)}."
             )
         if cls.LLM_PROVIDER == "gemini" and not is_devops_machine():
             raise EnvironmentError(DEVOPS_DENIED_MESSAGE)
 
     @classmethod
     def validate_selected_provider(cls) -> None:
-        """分析前验证当前 provider 所需配置。"""
         cls.validate_provider_name()
-
         if cls.LLM_PROVIDER == "gemini":
             if not cls.GEMINI_API_KEY:
                 raise EnvironmentError(
-                    "GEMINI_API_KEY 未设置。请在 DevOps 设置中填写有效的 API key。"
+                    "GEMINI_API_KEY is not configured. Open settings and provide it."
                 )
             cls.validate_gemini_api_key(cls.GEMINI_API_KEY)
         elif cls.LLM_PROVIDER == "dify":
             if not cls.DIFY_API_KEY:
                 raise EnvironmentError(
-                    "DIFY_API_KEY 未设置。请检查 API 设置。"
+                    "DIFY_API_KEY is not configured. Check API settings."
                 )
             if not cls.DIFY_BASE_URL:
                 raise EnvironmentError(
-                    "DIFY_BASE_URL 未设置。请检查 API 设置。"
+                    "DIFY_BASE_URL is not configured. Check API settings."
                 )
 
     @staticmethod
     def validate_gemini_api_key(value: str) -> None:
-        """Reject values that cannot be used as an HTTP header API key."""
         key = value.strip()
         if not key:
             raise ValueError("DevOps API key is required.")
         if not key.isascii() or any(character.isspace() for character in key):
             raise ValueError(
-                "DevOps API key is invalid. Enter the original ASCII key without spaces."
+                "DevOps API key is invalid. Use the original ASCII key without spaces."
             )
 
     @classmethod
     def reload(cls) -> None:
-        """从 .env / 环境变量重新加载运行时配置。"""
         load_dotenv(dotenv_path=cls.ENV_FILE, override=True)
         provider = os.getenv("LLM_PROVIDER", cls.LLM_PROVIDER).strip().lower()
         if provider == "gemini" and not is_devops_machine():
@@ -138,7 +182,8 @@ class Settings:
             os.getenv("GEMINI_THINKING_BUDGET", str(cls.GEMINI_THINKING_BUDGET))
         )
         cls.GEMINI_THINKING_LEVEL = os.getenv(
-            "GEMINI_THINKING_LEVEL", cls.GEMINI_THINKING_LEVEL
+            "GEMINI_THINKING_LEVEL",
+            cls.GEMINI_THINKING_LEVEL,
         ).strip().lower()
         cls.GEMINI_MODEL_FALLBACKS = cls._csv(
             os.getenv(
@@ -153,19 +198,17 @@ class Settings:
         provider: str | None = None,
         gemini_model: str | None = None,
     ) -> None:
-        """更新当前进程内非密钥配置。"""
         if provider is not None:
-            normalized_provider = provider.strip().lower()
-            if normalized_provider == "gemini" and not is_devops_machine():
+            normalized = provider.strip().lower()
+            if normalized == "gemini" and not is_devops_machine():
                 raise PermissionError(DEVOPS_DENIED_MESSAGE)
-            cls.LLM_PROVIDER = normalized_provider
+            cls.LLM_PROVIDER = normalized
         if gemini_model is not None and gemini_model.strip():
             cls.GEMINI_MODEL = gemini_model.strip()
         cls.validate_provider_name()
 
     @classmethod
     def provider_status(cls) -> dict[str, dict[str, bool]]:
-        """返回各 provider 必需配置是否存在，不暴露密钥值。"""
         return {
             "dify": {
                 "DIFY_API_KEY": bool(cls.DIFY_API_KEY),
@@ -183,11 +226,10 @@ class Settings:
         value = os.getenv(key)
         if value is None:
             return default
-        return value.strip().lower() in ("1", "true", "yes", "on")
+        return value.strip().lower() in {"1", "true", "yes", "on"}
 
     @classmethod
     def write_non_secret_env(cls, updates: dict[str, str]) -> None:
-        """Write managed settings to .env, removing duplicate managed keys."""
         allowed = {
             "LLM_PROVIDER",
             "GEMINI_MODEL",
@@ -235,9 +277,7 @@ class Settings:
 
         env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
-    # Backwards-compatible alias for older callers.
     validate = validate_selected_provider
 
 
-# 单例实例
 settings = Settings()

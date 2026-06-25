@@ -1,4 +1,4 @@
-# workers/profiling_worker.py
+"""Legacy profiling worker using the current profiling service."""
 
 from PySide6.QtCore import QObject
 from PySide6.QtCore import Signal
@@ -23,7 +23,7 @@ class ProfilingWorker(QObject):
     def __init__(self, dataset_files):
         super().__init__()
 
-        self.dataset_files = dataset_files
+        self.dataset_files = list(dataset_files)
 
         self.profiling_service = ProfilingService()
 

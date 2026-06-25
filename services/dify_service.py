@@ -1,8 +1,8 @@
-# services/dify_service.py
+"""Compatibility service for the legacy blocking Dify workflow API."""
 
 import json
 
-import requests
+import httpx
 
 
 class DifyService:
@@ -47,8 +47,8 @@ class DifyService:
             dataset_profiles=dataset_profiles,
         )
 
-        response = requests.post(
-            url=self.workflow_url,
+        response = httpx.post(
+            self.workflow_url,
             headers=self._build_headers(),
             json=payload,
             timeout=120,

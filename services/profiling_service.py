@@ -1,8 +1,6 @@
-# services/profiling_service.py
+"""Compatibility profiling service backed by the current preprocessor."""
 
-from core.profiler.dataset_profiler import (
-    DatasetProfiler
-)
+from core.preprocessor import Preprocessor
 
 
 class ProfilingService:
@@ -15,7 +13,7 @@ class ProfilingService:
     """
 
     def __init__(self):
-        self.profiler = DatasetProfiler()
+        self.preprocessor = Preprocessor()
 
     # =========================================================
     # Public API
@@ -34,6 +32,5 @@ class ProfilingService:
         dict
         """
 
-        profile = self.profiler.profile(file_path)
-
-        return profile
+        file_meta = self.preprocessor.process(file_path)
+        return file_meta.to_prompt_dict()

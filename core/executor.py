@@ -1,11 +1,9 @@
-"""
-core/executor.py
-────────────────
-在隔离的子进程中执行代码。
-加载 DataFrame，捕获输出，处理超时和内存限制。
-"""
+"""Execute Dify-generated Python against cached local datasets."""
 
 from __future__ import annotations
+
+import json
+import logging
 import subprocess
 import sys
 import tempfile
@@ -13,14 +11,20 @@ import textwrap
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from core.analysis_result import AnalysisResult
-from core.preprocessor import FileMeta
+from typing import Any
+
+import psutil
+
 from config.settings import settings
+from core.analysis_result import AnalysisResult, InsightResult
+from core.preprocessor import FileMeta
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ExecutionResult:
-    """代码执行结果"""
     success: bool
     stdout: str
     stderr: str
@@ -28,193 +32,233 @@ class ExecutionResult:
     timed_out: bool = False
     chart_paths: list[str] = field(default_factory=list)
     analysis_result: AnalysisResult = field(default_factory=AnalysisResult)
+    preflight_only: bool = False
+    peak_memory_mb: float = 0.0
 
     @property
     def output(self) -> str:
-        """便捷属性：返回主要输出"""
         return self.stdout if self.success else self.stderr
 
 
 class Executor:
-    """代码执行器"""
-
-    def __init__(self) -> None:
-        self._timeout = settings.EXEC_TIMEOUT_SEC
-        self._max_retries = settings.MAX_CODE_RETRIES
+    """Run generated code in a child process with lazy cached data access."""
 
     def run(
         self,
         code: str,
         files_meta: list[FileMeta],
+        *,
+        sample: bool = False,
+        analysis_plan: dict[str, Any] | None = None,
     ) -> ExecutionResult:
-        """
-        执行 Python 代码。
-        
-        Args:
-            code: 要执行的 Python 代码
-            files_meta: 文件元数据列表（用于加载 DataFrame）
-            
-        Returns:
-            ExecutionResult 对象
-        """
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            script_path = Path(tmp_dir) / "analysis.py"
-            result_path = Path(tmp_dir) / "analysis_result.json"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "analysis.py"
+            result_path = Path(temp_dir) / "analysis_result.json"
+            manifest = self._build_manifest(files_meta)
             script_path.write_text(
-                self._build_bootstrap(code, files_meta, result_path),
+                self._build_bootstrap(
+                    code,
+                    manifest,
+                    result_path,
+                    sample=sample,
+                ),
                 encoding="utf-8",
             )
 
-            execution = self._run_subprocess(str(script_path))
+            timeout = self._execution_timeout(files_meta, sample)
+            memory_limit = self._execution_memory_limit(files_meta, sample)
+            logger.info(
+                "Starting execution sample=%s timeout=%ss memory_limit_mb=%s datasets=%s",
+                sample,
+                timeout,
+                memory_limit,
+                [file_meta.runtime_key for file_meta in files_meta],
+            )
+            execution = self._run_subprocess(
+                str(script_path),
+                timeout,
+                memory_limit,
+            )
+            execution.preflight_only = sample
             execution.analysis_result = self._load_analysis_result(
                 result_path,
                 execution.stdout,
             )
+            execution.analysis_result.audit.append(
+                {
+                    "kind": "runtime",
+                    "elapsed_sec": execution.elapsed_sec,
+                    "peak_memory_mb": execution.peak_memory_mb,
+                    "sampled": sample,
+                }
+            )
+            semantic_error = self._semantic_audit(
+                execution.analysis_result,
+                analysis_plan or {},
+            )
+            if execution.success and semantic_error:
+                execution.success = False
+                execution.stderr = semantic_error
+            logger.info(
+                "Execution finished success=%s sample=%s elapsed=%.2fs peak_memory_mb=%.2f",
+                execution.success,
+                sample,
+                execution.elapsed_sec,
+                execution.peak_memory_mb,
+            )
             return execution
 
-    # ─────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _build_manifest(files_meta: list[FileMeta]) -> list[dict[str, Any]]:
+        name_counts: dict[str, int] = {}
+        for file_meta in files_meta:
+            name_counts[file_meta.file_name] = (
+                name_counts.get(file_meta.file_name, 0) + 1
+            )
+
+        manifest: list[dict[str, Any]] = []
+        for file_meta in files_meta:
+            dataset_id = file_meta.runtime_key
+            aliases: list[str] = []
+            if name_counts[file_meta.file_name] == 1:
+                aliases.append(file_meta.file_name)
+            display_name = file_meta.display_name or file_meta.file_name
+            if display_name != file_meta.file_name:
+                aliases.append(display_name)
+            manifest.append(
+                {
+                    "dataset_id": dataset_id,
+                    "display_name": display_name,
+                    "aliases": aliases,
+                    "sheets": [
+                        {
+                            "sheet_id": sheet.sheet_id or sheet.sheet_name,
+                            "name": sheet.sheet_name,
+                            "cache_path": sheet.cache_path,
+                            "sample_cache_path": sheet.sample_cache_path,
+                            "rows": sheet.rows,
+                            "columns": sheet.columns,
+                        }
+                        for sheet in file_meta.sheets
+                    ],
+                }
+            )
+        return manifest
 
     def _build_bootstrap(
         self,
         code: str,
-        files_meta: list[FileMeta],
+        manifest: list[dict[str, Any]],
         result_path: Path,
+        *,
+        sample: bool,
     ) -> str:
-        """
-        构建完整的执行脚本。
-        包括导入、加载 DataFrame、执行用户代码。
-        
-        步骤：
-          1. 导入必要的库
-          2. 加载 Excel 文件到 DataFrame
-          3. 组装 `dfs` 字典
-          4. 执行用户代码
-        """
-        load_lines: list[str] = []
-        dfs_entries: list[str] = []
-
-        # ── 为每个文件生成加载代码 ──
-        for fm in files_meta:
-            safe_var = self._safe_var(fm.file_name)
-            
-            # 加载 Excel 文件
-            load_lines.append(
-                f'{safe_var}_xl = pd.ExcelFile({fm.file_path!r})'
-            )
-            
-            # 为每个 Sheet 加载 DataFrame
-            sheet_dict_entries = []
-            for sheet in fm.sheets:
-                sheet_var = f"{safe_var}_{self._safe_var(sheet.sheet_name)}"
-                load_lines.append(
-                    f'{sheet_var} = {safe_var}_xl.parse({sheet.sheet_name!r})'
-                )
-                sheet_dict_entries.append(
-                    f'    {sheet.sheet_name!r}: {sheet_var}'
-                )
-            
-            # 为这个文件构建字典
-            dfs_entries.append(
-                f"  {fm.file_name!r}: {{\n"
-                + ",\n".join(sheet_dict_entries)
-                + "\n  }"
-            )
-
-        # ── 构建 dfs 字典 ──
-        dfs_block = "dfs = {\n" + ",\n".join(dfs_entries) + "\n}"
-
-        # ── 完整的引导脚本 ──
+        sample_rows = settings.SAMPLE_ROWS_PER_SHEET if sample else None
         user_code = textwrap.indent(code, "    ")
-        bootstrap = "\n".join([
-            "import sys as _bootstrap_sys",
-            f"_bootstrap_sys.path.insert(0, {str(settings.PROJECT_ROOT)!r})",
-            "_bootstrap_sys.stdout.reconfigure(encoding='utf-8', errors='replace')",
-            "_bootstrap_sys.stderr.reconfigure(encoding='utf-8', errors='replace')",
-            "import pandas as pd",
-            "import matplotlib",
-            "matplotlib.use('Agg')  # 无头模式",
-            "import matplotlib.pyplot as plt",
-            "from core.analysis_result import ResultCollector",
-            "import warnings",
-            "warnings.filterwarnings('ignore')",
-            "del warnings",
-            "del _bootstrap_sys",
-            "",
-            *load_lines,
-            "",
-            dfs_block,
-            "",
-            "result = ResultCollector()",
-            "del ResultCollector",
-            "# ── 用户代码开始 ──",
-            "try:",
-            user_code,
-            "finally:",
-            "    result.capture_open_figures(plt)",
-            f"    result.write_json({str(result_path)!r})",
-            "# ── 用户代码结束 ──",
-        ])
+        return "\n".join(
+            [
+                "import sys as _bootstrap_sys",
+                f"_bootstrap_sys.path.insert(0, {str(settings.PROJECT_ROOT)!r})",
+                "_bootstrap_sys.stdout.reconfigure(encoding='utf-8', errors='replace')",
+                "_bootstrap_sys.stderr.reconfigure(encoding='utf-8', errors='replace')",
+                "import pandas as pd",
+                "import numpy as np",
+                "import matplotlib",
+                "matplotlib.use('Agg')",
+                "import matplotlib.pyplot as plt",
+                "from core.analysis_result import ResultCollector",
+                "from core.data_access import LocalDataCatalog",
+                "import warnings",
+                "warnings.filterwarnings('ignore')",
+                f"_manifest = {manifest!r}",
+                f"data = LocalDataCatalog(_manifest, sample_rows={sample_rows!r})",
+                "dfs = data.dfs",
+                "result = ResultCollector()",
+                "del ResultCollector, LocalDataCatalog, warnings, _bootstrap_sys",
+                "",
+                "try:",
+                user_code,
+                "finally:",
+                "    result.extend_audit(data.audit_records)",
+                "    result.capture_open_figures(plt)",
+                f"    result.write_json({str(result_path)!r})",
+            ]
+        )
 
-        return bootstrap
-
-    def _run_subprocess(self, script_path: str) -> ExecutionResult:
-        """
-        在子进程中执行脚本。
-        
-        Args:
-            script_path: 脚本文件路径
-            
-        Returns:
-            ExecutionResult 对象
-        """
-        start = time.monotonic()
-        timed_out = False
-        stdout = ""
-        stderr = ""
-
-        # 在 PyInstaller 打包环境中，sys.executable 是应用自身而非解释器，
-        # 直接传脚本路径会重启整个 GUI。改用 worker 模式参数让 exe 把脚本
-        # 作为子进程执行（见 app/main.py 顶部的 --run-script 拦截）。
+    def _run_subprocess(
+        self,
+        script_path: str,
+        timeout: int,
+        memory_limit_mb: int,
+    ) -> ExecutionResult:
         if getattr(sys, "frozen", False):
-            cmd = [sys.executable, "--run-script", script_path]
+            command = [sys.executable, "--run-script", script_path]
         else:
-            cmd = [sys.executable, script_path]
+            command = [sys.executable, script_path]
 
+        started = time.monotonic()
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        peak_memory = 0.0
+        timed_out = False
+        memory_exceeded = False
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self._timeout,
-            )
-            stdout = result.stdout
-            stderr = result.stderr
-            success = result.returncode == 0
+            monitored = psutil.Process(process.pid)
+            while process.poll() is None:
+                elapsed = time.monotonic() - started
+                if elapsed > timeout:
+                    timed_out = True
+                    process.kill()
+                    break
+                try:
+                    memory = monitored.memory_info().rss
+                    for child in monitored.children(recursive=True):
+                        memory += child.memory_info().rss
+                    peak_memory = max(peak_memory, memory / (1024 * 1024))
+                    if peak_memory > memory_limit_mb:
+                        memory_exceeded = True
+                        process.kill()
+                        break
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+                time.sleep(0.05)
+            stdout, stderr = process.communicate()
+        except Exception as exc:
+            process.kill()
+            stdout, stderr = process.communicate()
+            stderr = f"{stderr}\nExecution monitor error: {exc}".strip()
+            logger.exception("Execution monitor failed")
 
-        except subprocess.TimeoutExpired:
-            stdout = ""
+        elapsed = round(time.monotonic() - started, 2)
+        if timed_out:
             stderr = (
-                f"⏱️ 执行超时（超过 {self._timeout} 秒）。\n"
-                f"代码可能陷入无限循环或执行时间过长。"
+                f"Execution timed out after {timeout} seconds. "
+                "Use cached data.get(), explicit columns, aggregation, or "
+                "data.sql() to reduce the workload."
             )
-            success = False
-            timed_out = True
-
-        except Exception as e:
-            stdout = ""
-            stderr = f"❌ 执行错误: {str(e)}"
-            success = False
-
-        elapsed = round(time.monotonic() - start, 2)
-
+        elif memory_exceeded:
+            stderr = (
+                f"Execution exceeded the {memory_limit_mb} MB memory "
+                "limit. Load fewer columns or use data.sql(..., sources=...) "
+                "for aggregation and joins."
+            )
         return ExecutionResult(
-            success=success,
+            success=(
+                process.returncode == 0
+                and not timed_out
+                and not memory_exceeded
+            ),
             stdout=stdout,
             stderr=stderr,
             elapsed_sec=elapsed,
             timed_out=timed_out,
+            peak_memory_mb=round(peak_memory, 2),
         )
 
     @staticmethod
@@ -222,38 +266,133 @@ class Executor:
         result_path: Path,
         stdout: str,
     ) -> AnalysisResult:
-        import json
-
-        payload = {}
+        payload: dict[str, Any] = {}
         if result_path.exists():
             try:
                 payload = json.loads(result_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
+                logger.exception("Failed to load structured analysis result from %s", result_path)
                 payload = {}
         analysis_result = AnalysisResult.from_dict(payload)
         analysis_result.raw_output = stdout.strip()
         if not analysis_result.summary and analysis_result.raw_output:
-            preview_limit = 1200
-            analysis_result.summary = analysis_result.raw_output[:preview_limit]
-            if len(analysis_result.raw_output) > preview_limit:
-                analysis_result.summary += "\n\nOutput continues in Execution details."
+            analysis_result.summary = analysis_result.raw_output[:1200]
         return analysis_result
 
     @staticmethod
-    def _safe_var(name: str) -> str:
-        """
-        将文件名/Sheet名转换为有效的 Python 变量名。
-        
-        例如：
-          "sales report.xlsx" → "sales_report_xlsx"
-          "Q1-2024" → "Q1_2024"
-        """
-        import re
-        
-        # 替换非字母数字字符为下划线
-        s = re.sub(r"[^\w]", "_", name)
-        
-        # 去掉开头的数字
-        s = s.lstrip("0123456789") or "df"
-        
-        return s
+    def _semantic_audit(
+        result: AnalysisResult,
+        analysis_plan: dict[str, Any],
+    ) -> str:
+        issues: list[str] = []
+        requirement_ids = {
+            str(item.get("id"))
+            for item in analysis_plan.get("requirements", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        completed = set(result.completed_requirements)
+        missing = sorted(requirement_ids - completed)
+        if missing:
+            issues.append(f"Requirements were not marked complete: {missing}")
+
+        confirmed_many_to_many = {
+            (
+                str((join.get("left") or {}).get("dataset_id") or ""),
+                str((join.get("right") or {}).get("dataset_id") or ""),
+            )
+            for requirement in analysis_plan.get("requirements", [])
+            if isinstance(requirement, dict)
+            for join in requirement.get("joins", []) or []
+            if isinstance(join, dict)
+            and join.get("expected_relationship") == "many_to_many"
+            and join.get("many_to_many_confirmed")
+        }
+        for record in result.audit:
+            if record.get("kind") != "join":
+                continue
+            pair = (str(record.get("left")), str(record.get("right")))
+            relationship = record.get("relationship")
+            multiplier = float(record.get("row_multiplier") or 0)
+            if relationship == "many_to_many" and pair not in confirmed_many_to_many:
+                issues.append(
+                    f"Unconfirmed many-to-many join: {pair[0]} -> {pair[1]}"
+                )
+            if multiplier > 5 and pair not in confirmed_many_to_many:
+                issues.append(
+                    f"Join expanded rows by {multiplier:.2f}x: "
+                    f"{pair[0]} -> {pair[1]}"
+                )
+
+        invalid_metrics = [
+            metric.label
+            for metric in result.metrics
+            if metric.value is None
+        ]
+        if invalid_metrics:
+            issues.append(
+                f"Metrics contain null/non-finite results: {invalid_metrics}"
+            )
+
+        if issues:
+            return "Semantic validation failed:\n- " + "\n- ".join(issues)
+
+        if result.audit:
+            result.insights.append(
+                InsightResult(
+                    "Execution audit",
+                    (
+                        f"{len(result.audit)} audited data operation(s) completed. "
+                        "Dataset loads and joins were recorded locally."
+                    ),
+                    "insight",
+                )
+            )
+        return ""
+
+    @staticmethod
+    def _execution_timeout(
+        files_meta: list[FileMeta],
+        sample: bool,
+    ) -> int:
+        if sample:
+            return max(15, settings.EXEC_TIMEOUT_SEC)
+        total_rows = sum(
+            sheet.rows
+            for file_meta in files_meta
+            for sheet in file_meta.sheets
+        )
+        scaled = settings.EXEC_TIMEOUT_SEC + int(total_rows / 100_000) * 10
+        large = any(
+            file_meta.file_size_kb
+            >= settings.BACKGROUND_ANALYSIS_MB * 1024
+            or sum(sheet.rows for sheet in file_meta.sheets)
+            >= settings.BACKGROUND_ANALYSIS_ROWS
+            for file_meta in files_meta
+        )
+        maximum = (
+            settings.BACKGROUND_EXEC_TIMEOUT_SEC if large else 600
+        )
+        minimum = settings.EXEC_TIMEOUT_SEC
+        if large:
+            minimum = max(settings.EXEC_TIMEOUT_SEC * 4, 300)
+        return max(minimum, min(scaled, maximum))
+
+    @staticmethod
+    def _execution_memory_limit(
+        files_meta: list[FileMeta],
+        sample: bool,
+    ) -> int:
+        if sample:
+            return max(settings.EXEC_MAX_MEM_MB, 1024)
+        large = any(
+            file_meta.file_size_kb
+            >= settings.BACKGROUND_ANALYSIS_MB * 1024
+            or sum(sheet.rows for sheet in file_meta.sheets)
+            >= settings.BACKGROUND_ANALYSIS_ROWS
+            for file_meta in files_meta
+        )
+        return (
+            settings.BACKGROUND_EXEC_MAX_MEM_MB
+            if large
+            else max(settings.EXEC_MAX_MEM_MB, 2048)
+        )

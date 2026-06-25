@@ -6,6 +6,7 @@ config/logging_setup.py
 
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 from config.runtime_paths import app_log_file
 
 
@@ -29,7 +30,12 @@ def setup_logging(log_level: str | None = None) -> None:
         and getattr(h, "baseFilename", None) == str(log_file)
     ]
     if not existing_file_handlers:
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler = RotatingFileHandler(
+            log_file,
+            encoding="utf-8",
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+        )
         file_handler.setFormatter(fmt)
         root.addHandler(file_handler)
 

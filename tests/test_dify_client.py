@@ -112,12 +112,13 @@ def test_overview_prompt_fits_configured_dify_input_limits():
     assert prompt["query"]
 
 
-def test_build_inputs_uses_dify_published_length_limit():
+def test_build_inputs_moves_long_query_into_context_without_truncation():
     client = _client()
+    long_query = "x" * 501
     prompt = {
         "task_type": "analysis",
-        "context": "metadata",
-        "query": "x" * 501,
+        "context": json.dumps({"datasets": []}),
+        "query": long_query,
     }
     parameters = {
         "user_input_form": [
@@ -133,10 +134,11 @@ def test_build_inputs_uses_dify_published_length_limit():
         ]
     }
 
-    with pytest.raises(DifyClientError) as exc_info:
-        client._build_inputs(prompt, parameters)
+    inputs = client._build_inputs(prompt, parameters)
 
-    assert "501 / 500" in str(exc_info.value)
+    assert len(inputs["query"]) <= 500
+    transferred = json.loads(inputs["context"])
+    assert transferred["user_query_full"] == long_query
 
 
 def test_extract_analysis_reads_code_and_structured_plan():
@@ -176,6 +178,34 @@ def test_extract_analysis_never_treats_plan_as_code():
         )
 
     assert "did not contain Python code" in str(exc_info.value)
+
+
+def test_extract_analysis_accepts_clarification_without_code():
+    client = _client()
+    generated = client.extract_analysis_from_response(
+        {
+            "data": {
+                "status": "succeeded",
+                "outputs": {
+                    "analysis_plan": {
+                        "clarification_required": True,
+                        "clarification_question": "Which customer key?",
+                        "clarification_options": [
+                            {
+                                "id": "customer_id",
+                                "label": "Customer ID",
+                                "description": "Join both files by customer_id.",
+                            }
+                        ],
+                    }
+                },
+            }
+        }
+    )
+
+    assert generated["clarification_required"]
+    assert generated["code"] == ""
+    assert generated["clarification_options"][0]["id"] == "customer_id"
 
 
 def test_extract_overview_accepts_direct_object_outputs():

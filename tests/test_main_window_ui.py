@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from PySide6.QtCore import QEvent
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QFileDialog
 
 from core.preprocessor import FileMeta, SheetMeta
 from core.analysis_result import (
@@ -15,6 +16,50 @@ from core.analysis_result import (
 from config.settings import settings
 from core.executor import ExecutionResult
 from ui.main_window import MainWindow
+
+
+def test_start_page_is_data_first_and_unlocks_capabilities(qapp):
+    window = MainWindow()
+    window.show()
+    qapp.processEvents()
+
+    assert not hasattr(window, "start_task_btn")
+    assert not hasattr(window, "start_clean_btn")
+    assert window.start_page.drop_zone.isVisible()
+    assert not window.start_page.capability_panel.isVisible()
+    tip_text = " ".join(
+        label.text()
+        for label in window.start_page.tips_panel.findChildren(type(window.start_page.status_label))
+    )
+    assert "Small files stay interactive" in tip_text
+    assert "under 100 MB" in tip_text
+    assert "up to 2 GB" in tip_text
+    assert "Analyze up to 3 workbooks together" in tip_text
+    assert "Cleaning works on one workbook" in tip_text
+    assert not window.mode_button.isVisible()
+    assert not window.dataset_library_btn.isVisible()
+
+    window.loaded_files["ready.xlsx"] = FileMeta(
+        file_path="C:/ready.xlsx",
+        file_name="ready.xlsx",
+        file_size_kb=1,
+        sheet_count=0,
+        sheets=[],
+        dataset_id="ds_ready",
+    )
+    window._refresh_global_dataset_surfaces()
+    QTest.qWait(280)
+    qapp.processEvents()
+
+    assert window.start_page.capability_panel.isVisible()
+    assert window.start_page.analysis_card.text() == "Analyze"
+    assert window.start_page.cleaning_card.text() == "Clean"
+    assert window.start_page.drop_zone.maximumWidth() == 520
+    assert window.start_page.capability_panel.maximumWidth() == 244
+    assert window.start_page.capability_panel.x() > window.start_page.drop_zone.x()
+    assert not window.mode_button.isVisible()
+    assert not window.dataset_library_btn.isVisible()
+    window.close()
 
 
 def test_python_tab_stays_hidden_until_code_is_ready(qapp):
@@ -31,6 +76,80 @@ def test_python_tab_stays_hidden_until_code_is_ready(qapp):
 
     assert window.analysis_tabs.tabBar().isTabVisible(window.python_tab_index)
 
+    window.close()
+
+
+def test_multiline_prompt_resizes_and_composer_remains_centered(qapp):
+    window = MainWindow()
+    window.show()
+    window._start_new_task()
+    qapp.processEvents()
+
+    initial_height = window.prompt_input.height()
+    window.prompt_input.setPlainText(
+        "Compare revenue by region.\n"
+        "Then explain the strongest changes.\n"
+        "Include a compact summary table."
+    )
+    qapp.processEvents()
+    window._position_floating_composer()
+
+    assert window.prompt_input.height() > initial_height
+    assert window.prompt_input.height() <= 168
+    expected_x = (window.workspace.width() - window.command_bar.width()) // 2
+    assert abs(window.command_bar.x() - expected_x) <= 1
+    window.close()
+
+
+def test_preflight_ready_opens_python_and_apply_tracks_edits(qapp):
+    window = MainWindow()
+    window.show()
+    window._start_new_task()
+    window._pending_files_meta = [
+        FileMeta(
+            file_path="C:/ready.xlsx",
+            file_name="ready.xlsx",
+            file_size_kb=1,
+            sheet_count=0,
+            sheets=[],
+            dataset_id="ds_ready",
+        )
+    ]
+    window._active_worker_mode = "prepare"
+
+    result = SimpleNamespace(
+        needs_clarification=False,
+        success=True,
+        code="print('ready')",
+        analysis_plan={"requirements": []},
+        execution=None,
+        preflight_only=True,
+        retries_used=0,
+        error="",
+    )
+    window._on_worker_finished(result)
+    qapp.processEvents()
+
+    assert window.analysis_tabs.currentIndex() == window.python_tab_index
+    assert window.code_apply_btn.isVisible()
+    assert window.code_apply_btn.parent() is not window.command_bar
+
+    window._present_execution_result(
+        window.code_editor.toPlainText(),
+        ExecutionResult(
+            success=True,
+            stdout="ok",
+            stderr="",
+            elapsed_sec=0.1,
+            analysis_result=AnalysisResult(summary="Done"),
+        ),
+    )
+    assert not window.code_apply_btn.isVisible()
+
+    window.analysis_tabs.setCurrentIndex(window.python_tab_index)
+    window.code_editor.insertPlainText("\n# edited")
+    qapp.processEvents()
+    assert window.code_apply_btn.isVisible()
     window.close()
 
 
@@ -340,6 +459,11 @@ def test_failed_overview_shows_retry_without_overview_or_suggestions(qapp):
     qapp.processEvents()
     assert window.overview_popover.isVisible()
 
+    window._context_panel_open = True
+    window._close_context_panel()
+    qapp.processEvents()
+    assert not window.overview_popover.isVisible()
+
     window.close()
 
 
@@ -389,6 +513,59 @@ def test_removing_dataset_cleans_state_and_selects_remaining_dataset(qapp):
     assert window._generated_code == ""
     assert not window.analysis_tabs.tabBar().isTabVisible(window.python_tab_index)
 
+    window.close()
+
+
+def test_removing_analysis_source_clears_title_and_import_message(qapp):
+    window = MainWindow()
+    window.show()
+    file_meta = FileMeta(
+        file_path="C:/analysis.xlsx",
+        file_name="analysis.xlsx",
+        file_size_kb=8.0,
+        sheet_count=0,
+        sheets=[],
+        dataset_id="ds_analysis",
+    )
+    window.loaded_files["analysis.xlsx"] = file_meta
+    window._add_dataset_item("analysis.xlsx", selected=True)
+    window._start_new_task()
+    window._pending_files_meta = [file_meta]
+    window._pending_query = "Analyze revenue"
+    window._create_history_task("analysis.xlsx", "Analyze revenue")
+    window._current_analysis_result = AnalysisResult(summary="Completed")
+    window.result_output.set_result(window._current_analysis_result)
+    window._refresh_workspace_header()
+    assert window.workspace_title_label.text() == "Analyze revenue"
+
+    window._remove_dataset("analysis.xlsx")
+    qapp.processEvents()
+
+    assert window.workspace_title_label.text() == ""
+    assert not window.workspace_title_label.isVisible()
+    result_labels = [
+        label.text()
+        for label in window.result_output.findChildren(
+            type(window.workspace_title_label)
+        )
+    ]
+    assert "Add a dataset to continue." in result_labels
+    assert "Please import a dataset first." not in result_labels
+    window.close()
+
+
+def test_main_window_opens_centered_after_hidden_first_frame(qapp):
+    window = MainWindow()
+    assert window.windowOpacity() == 0.0
+    window.show()
+    QTest.qWait(240)
+    qapp.processEvents()
+
+    available = window.screen().availableGeometry()
+    delta = window.frameGeometry().center() - available.center()
+    assert abs(delta.x()) <= 1
+    assert abs(delta.y()) <= 1
+    assert window.windowOpacity() == 1.0
     window.close()
 
 
@@ -540,6 +717,34 @@ def test_structured_result_and_analysis_plan_render_in_primary_workspace(qapp):
     window.close()
 
 
+def test_analysis_result_enables_basic_excel_export(qapp, monkeypatch, tmp_path):
+    window = MainWindow()
+    window.show()
+    window._start_new_task()
+    window._current_analysis_result = AnalysisResult(summary="Ready to export")
+    window._refresh_result_export_state()
+    destination = tmp_path / "result"
+    started = []
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(destination), "Excel Workbook (*.xlsx)"),
+    )
+    monkeypatch.setattr(
+        window,
+        "_start_result_export",
+        lambda output_path: started.append(output_path),
+    )
+
+    window._on_export_result_clicked()
+    qapp.processEvents()
+
+    assert window.header_export_btn.isVisible()
+    assert window.export_result_action.isEnabled()
+    assert started == [str(destination) + ".xlsx"]
+    window.close()
+
+
 def test_long_request_input_grows_and_shows_character_count(qapp):
     window = MainWindow()
     window.show()
@@ -593,6 +798,55 @@ def test_analysis_uses_all_imported_datasets(qapp, monkeypatch):
     assert task is not None
     assert task["dataset"] == "first.xlsx, second.xlsx"
 
+    window.close()
+
+
+def test_analysis_selection_is_limited_to_three_datasets(qapp):
+    window = MainWindow()
+    window._start_new_task()
+    for index in range(4):
+        name = f"dataset-{index}.xlsx"
+        window.loaded_files[name] = FileMeta(
+            file_path=f"C:/{name}",
+            file_name=name,
+            file_size_kb=1.0,
+            sheet_count=0,
+            sheets=[],
+        )
+        window._add_dataset_item(name, selected=index < 3)
+
+    fourth = window._dataset_row_widgets["dataset-3.xlsx"]
+    assert len(window._selected_datasets) == 3
+    assert not fourth.selection_box.isEnabled()
+
+    window._on_dataset_analysis_selection_changed("dataset-0.xlsx", False)
+    window._on_dataset_analysis_selection_changed("dataset-3.xlsx", True)
+
+    assert len(window._selected_datasets) == 3
+    assert "dataset-3.xlsx" in window._selected_datasets
+    assert "dataset-0.xlsx" not in window._selected_datasets
+    window.close()
+
+
+def test_large_selected_dataset_uses_background_analysis_mode(qapp):
+    window = MainWindow()
+    large = FileMeta(
+        file_path="C:/large.xlsx",
+        file_name="large.xlsx",
+        file_size_kb=101 * 1024,
+        sheet_count=0,
+        sheets=[],
+    )
+    small = FileMeta(
+        file_path="C:/small.xlsx",
+        file_name="small.xlsx",
+        file_size_kb=10 * 1024,
+        sheet_count=0,
+        sheets=[],
+    )
+
+    assert window._uses_background_analysis([large])
+    assert not window._uses_background_analysis([small])
     window.close()
 
 
@@ -660,29 +914,34 @@ def test_result_first_shell_collapses_context_and_floating_composer(qapp):
     window = MainWindow()
     window.show()
     window._start_new_task()
+    QTest.qWait(220)
     qapp.processEvents()
 
-    assert window.sidebar.isVisible()
-    assert window.left_shell.width() == 268
+    assert window.left_shell.isVisible()
+    assert window.left_shell.width() == 342
 
     window._close_context_panel()
-    window._composer_pinned = False
     window._collapse_composer("done")
     QTest.qWait(260)
     qapp.processEvents()
 
-    assert not window.sidebar.isVisible()
-    assert window.left_shell.width() == 48
+    assert not window.left_shell.isVisible()
+    assert window.left_shell.width() == 342
     assert not window.command_bar.isVisible()
     assert window.composer_status_btn.isVisible()
 
-    QTest.qWait(220)
-    qapp.sendEvent(window.composer_status_btn, QEvent(QEvent.Enter))
+    window.composer_status_btn.click()
     QTest.qWait(260)
     qapp.processEvents()
 
     assert window.command_bar.isVisible()
     assert not window.composer_status_btn.isVisible()
+
+    window.composer_close_btn.click()
+    QTest.qWait(260)
+    qapp.processEvents()
+    assert not window.command_bar.isVisible()
+    assert window.composer_status_btn.isVisible()
     window.close()
 
 
@@ -707,26 +966,97 @@ def test_analysis_navigation_owns_dataset_context_and_composer_is_centered(qapp)
     window.show()
     window._start_new_task()
     window._close_context_panel()
+    QTest.qWait(220)
     qapp.processEvents()
 
     assert not hasattr(window, "nav_data_btn")
     assert not hasattr(window, "nav_history_btn")
+    assert window.history_btn.parent() is window.title_bar
+    assert window.settings_btn.parent() is window.title_bar
+    assert window.history_btn.text() == "History"
+    assert window.settings_btn.text() == "Config"
+    assert window.title_bar.actions_layout.count() == 2
+    assert window.dataset_library_btn.text().startswith("Datasets")
 
-    window.nav_analysis_btn.click()
+    window.dataset_library_btn.click()
+    QTest.qWait(280)
     qapp.processEvents()
-    assert window.sidebar.isVisible()
+    assert window.left_shell.isVisible()
 
-    window.nav_analysis_btn.click()
+    window.dataset_library_btn.click()
+    QTest.qWait(280)
     qapp.processEvents()
-    assert not window.sidebar.isVisible()
+    assert not window.left_shell.isVisible()
 
-    window._composer_pinned = True
     window._expand_composer(pin=True)
     window._position_floating_composer()
     qapp.processEvents()
 
     expected_x = (window.workspace.width() - window.command_bar.width()) // 2
     assert abs(window.command_bar.x() - expected_x) <= 1
+    window.close()
+
+
+def test_mode_dropdown_switches_between_analysis_and_cleaning(qapp):
+    window = MainWindow()
+    window.show()
+    window.loaded_files["ready.xlsx"] = FileMeta(
+        file_path="C:/ready.xlsx",
+        file_name="ready.xlsx",
+        file_size_kb=1,
+        sheet_count=0,
+        sheets=[],
+        dataset_id="ds_ready",
+    )
+    window._start_new_task()
+    qapp.processEvents()
+
+    assert window.mode_button.isVisible()
+    assert window.mode_button.text() == "Mode: Data Analysis"
+    assert not window.dataset_library_btn.isHidden()
+
+    window.mode_cleaning_action.trigger()
+    QTest.qWait(220)
+    qapp.processEvents()
+    assert window.page_container.currentWidget() is window.cleaning_page
+    assert window.mode_button.text() == "Mode: Data Cleaning"
+    assert len(window._selected_datasets) == 1
+    assert window.cleaning_page.target_label.text() == "ready.xlsx"
+
+    window.mode_analysis_action.trigger()
+    QTest.qWait(220)
+    qapp.processEvents()
+    assert window.page_container.currentWidget() is window.workspace
+    assert window.mode_button.text() == "Mode: Data Analysis"
+    window.close()
+
+
+def test_dataset_rows_use_highlight_selection_and_cleaning_allows_one(qapp):
+    window = MainWindow()
+    for index in range(3):
+        name = f"dataset-{index}.xlsx"
+        window.loaded_files[name] = FileMeta(
+            file_path=f"C:/{name}",
+            file_name=name,
+            file_size_kb=1,
+            sheet_count=0,
+            sheets=[],
+            dataset_id=f"ds_{index}",
+        )
+        window._add_dataset_item(name, selected=index < 2)
+
+    assert all(
+        not widget.selection_box.isVisible()
+        for widget in window._dataset_row_widgets.values()
+    )
+
+    window._show_cleaning_page()
+    window._on_dataset_row_activated("dataset-2.xlsx")
+
+    assert window._selected_datasets == {"dataset-2.xlsx"}
+    assert window.cleaning_page.target_label.text() == "dataset-2.xlsx"
+    assert window._dataset_row_widgets["dataset-2.xlsx"]._scope_selected
+    assert not window._dataset_row_widgets["dataset-0.xlsx"]._scope_selected
     window.close()
 
 
@@ -740,19 +1070,19 @@ def test_minimal_desktop_menus_expose_only_global_commands(qapp):
     assert [action.text() for action in window.file_menu_btn.menu().actions()] == [
         "New Analysis",
         "Add Dataset...",
+        "Export Result...",
         "",
         "Exit",
     ]
     assert [action.text() for action in window.view_menu_btn.menu().actions()] == [
-        "Analysis Context",
-        "Python Code",
+        "Dataset Library",
         "Activity",
     ]
-    assert not window.view_code_action.isEnabled()
 
     window._generated_code = "print('ok')"
     window._set_python_tab_visible(True)
 
-    assert window.view_code_action.isEnabled()
-    assert not window.header_code_btn.isHidden()
+    assert window.analysis_tabs.tabBar().isTabVisible(window.python_tab_index)
+    assert not hasattr(window, "view_code_action")
+    assert not hasattr(window, "header_code_btn")
     window.close()

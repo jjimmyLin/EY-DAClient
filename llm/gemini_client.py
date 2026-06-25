@@ -152,6 +152,86 @@ class GeminiClient:
         )
         return code
 
+    def generate_analysis(
+        self,
+        prompt: dict,
+        event_callback: EventCallback | None = None,
+    ) -> dict:
+        """DevOps adapter that follows the same plan-then-code contract as Dify."""
+        task_type = str(prompt.get("task_type") or "analysis")
+        if task_type != "analysis":
+            return {
+                "code": self.generate_code(
+                    prompt,
+                    event_callback=event_callback,
+                ),
+                "plan": {},
+            }
+
+        plan_prompt = dict(prompt)
+        plan_prompt["system"] = (
+            "Return one valid JSON analysis plan only. Parse context as JSON. "
+            "Use only supplied dataset_id, sheet_id, columns, and relationship "
+            "evidence. Required top-level keys: task_summary, requirements, "
+            "warnings, clarification_required, clarification_question, "
+            "clarification_options. Each requirement needs id, objective, "
+            "sources, joins, grain, formula, output_type. Never guess an "
+            "ambiguous cross-dataset relationship; request clarification."
+        )
+        self._emit(event_callback, "status", "Generating DevOps analysis plan")
+        response = self._post_generate_content(plan_prompt)
+        plan_text, _ = self._extract_text(response)
+        plan = self._parse_json_object(plan_text)
+        if plan.get("clarification_required"):
+            return {
+                "code": "",
+                "plan": plan,
+                "clarification_required": True,
+                "clarification_question": str(
+                    plan.get("clarification_question") or ""
+                ),
+                "clarification_options": plan.get(
+                    "clarification_options",
+                    [],
+                ),
+            }
+
+        code_prompt = dict(prompt)
+        code_prompt["context"] = (
+            f"{prompt.get('context', '')}\n\n"
+            "CONFIRMED_ANALYSIS_PLAN="
+            + json.dumps(plan, ensure_ascii=False, separators=(",", ":"))
+        )
+        code = self.generate_code(
+            code_prompt,
+            event_callback=event_callback,
+        )
+        return {
+            "code": code,
+            "plan": plan,
+            "clarification_required": False,
+        }
+
+    @staticmethod
+    def _parse_json_object(text: str) -> dict:
+        cleaned = str(text).strip()
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise GeminiClientError(
+                400,
+                "DevOps analysis planner did not return JSON",
+            )
+        try:
+            payload = json.loads(cleaned[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise GeminiClientError(
+                400,
+                f"Invalid DevOps analysis plan JSON: {exc}",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise GeminiClientError(400, "DevOps analysis plan must be an object")
+        return payload
+
     # =========================================================
     # Model Fallback
     # =========================================================

@@ -6,6 +6,7 @@ Background worker for analysis generation and execution.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal, Slot
@@ -13,6 +14,9 @@ from PySide6.QtCore import QObject, Signal, Slot
 from core.preprocessor import FileMeta
 from dify.workflow import AnalysisWorkflow, WorkflowResult
 from llm.cancellation import CancellationToken, RequestCancelled
+
+
+logger = logging.getLogger(__name__)
 
 
 class AnalysisWorker(QObject):
@@ -40,10 +44,12 @@ class AnalysisWorker(QObject):
 
     def cancel(self) -> None:
         self._cancellation_token.cancel()
+        logger.info("Analysis worker cancellation requested mode=%s", self._mode)
 
     @Slot()
     def run(self) -> None:
         try:
+            logger.info("Analysis worker started mode=%s datasets=%s", self._mode, [file_meta.runtime_key for file_meta in self._files_meta])
             workflow = AnalysisWorkflow(cancellation_token=self._cancellation_token)
             if self._mode == "prepare":
                 result = workflow.prepare_analysis(
@@ -87,10 +93,14 @@ class AnalysisWorker(QObject):
                 )
 
             if not self._cancellation_token.is_cancelled:
+                logger.info("Analysis worker finished mode=%s success=%s", self._mode, result.success)
                 self.finished.emit(result)
             else:
+                logger.info("Analysis worker cancelled after mode=%s", self._mode)
                 self.error.emit("Request cancelled")
         except RequestCancelled:
+            logger.info("Analysis worker raised RequestCancelled mode=%s", self._mode)
             self.error.emit("Request cancelled")
         except Exception as exc:
+            logger.exception("Analysis worker failed mode=%s", self._mode)
             self.error.emit(str(exc))
