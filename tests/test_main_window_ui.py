@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
@@ -1058,6 +1058,60 @@ def test_analysis_navigation_owns_dataset_context_and_composer_is_centered(qapp)
 
     expected_x = (window.workspace.width() - window.command_bar.width()) // 2
     assert abs(window.command_bar.x() - expected_x) <= 1
+    window.close()
+
+
+def test_dataset_library_closes_when_clicking_outside(qapp):
+    window = MainWindow()
+    window.show()
+    window._start_new_task()
+    window.loaded_files["ready.xlsx"] = FileMeta(
+        file_path="C:/ready.xlsx",
+        file_name="ready.xlsx",
+        file_size_kb=1,
+        sheet_count=1,
+        sheets=[],
+    )
+    window._add_dataset_item("ready.xlsx")
+    window.dataset_list.setCurrentRow(0)
+    window._dataset_overviews["ready.xlsx"] = {
+        "state": "ready",
+        "data": {
+            "dataset_kind": "Workbook",
+            "topic": "Ready dataset",
+            "summary": "A ready workbook.",
+            "rows": 1,
+            "columns": 1,
+            "sheet_count": 1,
+            "suggestions": [],
+        },
+    }
+    window._close_context_panel()
+    QTest.qWait(280)
+    qapp.processEvents()
+
+    window.dataset_library_btn.click()
+    QTest.qWait(280)
+    qapp.processEvents()
+    assert window.left_shell.isVisible()
+    assert window._context_click_guard_active
+
+    QTest.mouseClick(window.dataset_selection_label, Qt.LeftButton)
+    qapp.processEvents()
+    assert window.left_shell.isVisible()
+    assert window._context_click_guard_active
+
+    window._show_overview_for_dataset("ready.xlsx")
+    qapp.processEvents()
+    assert window.overview_popover.isVisible()
+
+    QTest.mouseClick(window.workspace, Qt.LeftButton, pos=QPoint(24, 24))
+    QTest.qWait(280)
+    qapp.processEvents()
+
+    assert not window.left_shell.isVisible()
+    assert not window._context_click_guard_active
+    assert not window.overview_popover.isVisible()
     window.close()
 
 

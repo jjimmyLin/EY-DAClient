@@ -316,6 +316,7 @@ class MainWindow(QMainWindow):
         self._suggestion_hide_timer.setInterval(160)
         self._suggestion_hide_timer.timeout.connect(self._maybe_hide_suggestion_popover)
         self._context_panel_open = False
+        self._context_click_guard_active = False
         self._context_animation = None
         self._composer_collapsed = False
         self._composer_animation = None
@@ -955,12 +956,26 @@ class MainWindow(QMainWindow):
             self._close_context_panel()
             return
         self._context_panel_open = True
+        self._set_context_click_guard_enabled(True)
         self._animate_context_panel(True)
 
     def _close_context_panel(self) -> None:
+        self._set_context_click_guard_enabled(False)
         self._context_panel_open = False
         self.overview_popover.hide()
         self._animate_context_panel(False)
+
+    def _set_context_click_guard_enabled(self, enabled: bool) -> None:
+        if self._context_click_guard_active == enabled:
+            return
+        app = QApplication.instance()
+        if app is None:
+            return
+        if enabled:
+            app.installEventFilter(self)
+        else:
+            app.removeEventFilter(self)
+        self._context_click_guard_active = enabled
 
     def _animate_context_panel(self, opening: bool) -> None:
         if self._context_animation is not None:
@@ -1299,7 +1314,61 @@ class MainWindow(QMainWindow):
         if current_name:
             self._ensure_dataset_overview(current_name, force=False)
 
+    @staticmethod
+    def _is_widget_or_child(widget: QWidget | None, ancestor: QWidget | None) -> bool:
+        if widget is None or ancestor is None:
+            return False
+        current = widget
+        while current is not None:
+            if current is ancestor:
+                return True
+            current = current.parentWidget()
+        return False
+
+    @staticmethod
+    def _contains_global_point(widget: QWidget | None, point: QPoint) -> bool:
+        if widget is None or not widget.isVisible():
+            return False
+        top_left = widget.mapToGlobal(QPoint(0, 0))
+        return QRect(top_left, widget.size()).contains(point)
+
+    def _maybe_close_context_panel_from_click(self, watched, event) -> None:
+        if not self._context_panel_open:
+            return
+        if event.type() != QEvent.MouseButtonPress:
+            return
+        if hasattr(event, "button") and event.button() != Qt.LeftButton:
+            return
+
+        clicked_widget = (
+            watched if isinstance(watched, QWidget)
+            else QApplication.widgetAt(event.globalPosition().toPoint())
+        )
+        global_pos = event.globalPosition().toPoint()
+        if clicked_widget is None or clicked_widget.window() is not self:
+            return
+        protected_widgets = (
+            self.left_shell,
+            self.dataset_library_btn,
+            getattr(self.start_page, "library_button", None),
+            self.overview_popover,
+        )
+        if any(
+            self._is_widget_or_child(clicked_widget, protected)
+            for protected in protected_widgets
+        ):
+            return
+        if any(
+            self._contains_global_point(protected, global_pos)
+            for protected in protected_widgets
+        ):
+            return
+        self._close_context_panel()
+
     def eventFilter(self, watched, event):
+        if event.type() == QEvent.MouseButtonPress:
+            self._maybe_close_context_panel_from_click(watched, event)
+
         workspace = getattr(self, "workspace", None)
         workspace_root = getattr(self, "workspace_root", None)
         app_surface = getattr(self, "app_surface", None)
@@ -2217,6 +2286,7 @@ class MainWindow(QMainWindow):
         self._stop_overview_worker()
         self.overview_popover.hide()
         self._hide_suggestion_popover()
+        self._set_context_click_guard_enabled(False)
         super().closeEvent(event)
 
     def keyPressEvent(self, event) -> None:
