@@ -7,11 +7,13 @@ import base64
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSequentialAnimationGroup, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFrame,
     QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QTableWidget,
     QTableWidgetItem,
@@ -21,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.analysis_result import AnalysisResult, InsightResult
+from core.analysis_result import AnalysisResult, AnswerResult, InsightResult
 
 
 class AnalysisResultPanel(QWidget):
@@ -32,6 +34,9 @@ class AnalysisResultPanel(QWidget):
         self.setObjectName("analysisResultPanel")
         self._plain_text = ""
         self._reveal_group: QSequentialAnimationGroup | None = None
+        self._result: AnalysisResult | None = None
+        self._selected_answer_index: int | None = None
+        self._switch_group: QButtonGroup | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -53,6 +58,8 @@ class AnalysisResultPanel(QWidget):
     def clear(self) -> None:
         self._clear_layout()
         self._plain_text = ""
+        self._result = None
+        self._selected_answer_index = None
 
     def setText(self, text: str) -> None:
         self.setPlainText(text)
@@ -71,6 +78,8 @@ class AnalysisResultPanel(QWidget):
     def set_empty_state(self, text: str) -> None:
         self._clear_layout()
         self._plain_text = ""
+        self._result = None
+        self._selected_answer_index = None
         empty = QLabel(str(text or ""))
         empty.setObjectName("resultEmpty")
         empty.setAlignment(Qt.AlignCenter)
@@ -81,9 +90,57 @@ class AnalysisResultPanel(QWidget):
         del value
 
     def set_result(self, result: AnalysisResult) -> None:
+        self._result = result
+        self._selected_answer_index = None
+        self._render_result(result)
+
+    def selected_answer_index(self) -> int | None:
+        return self._selected_answer_index
+
+    def export_result(self) -> AnalysisResult | None:
+        if self._result is None:
+            return None
+        if self._selected_answer_index is None:
+            return self._result
+        return self._result.answer_result(self._selected_answer_index)
+
+    def show_all_results(self) -> None:
+        if self._result is None:
+            return
+        self._selected_answer_index = None
+        self._render_result(self._result)
+
+    def show_answer_result(self, answer_index: int) -> None:
+        if self._result is None:
+            return
+        if answer_index < 0 or answer_index >= len(self._result.answers):
+            return
+        self._selected_answer_index = answer_index
+        self._render_result(self._result.answer_result(answer_index))
+
+    def _render_result(self, result: AnalysisResult) -> None:
         self._clear_layout()
         self._plain_text = result.raw_output or result.summary
         reveal_widgets: list[QWidget] = []
+
+        if self._result is not None and len(self._result.answers) > 1:
+            switcher = self._answer_switcher()
+            self.content_layout.addWidget(switcher)
+            reveal_widgets.append(switcher)
+
+        if result.answers:
+            answers_label = self._section_label("Answers")
+            self.content_layout.addWidget(answers_label)
+            reveal_widgets.append(answers_label)
+            for index, answer in enumerate(result.answers, start=1):
+                display_index = (
+                    self._selected_answer_index + 1
+                    if self._selected_answer_index is not None
+                    else index
+                )
+                card = self._answer_card(answer, display_index)
+                self.content_layout.addWidget(card)
+                reveal_widgets.append(card)
 
         if result.summary or result.metrics:
             overview_host = QWidget()
@@ -99,7 +156,7 @@ class AnalysisResultPanel(QWidget):
                 summary_layout.setSpacing(7)
                 summary_layout.addWidget(
                     self._section_label(
-                        "Analysis summary",
+                        "Global summary" if result.answers else "Analysis summary",
                         "resultSectionEyebrow",
                     )
                 )
@@ -283,6 +340,52 @@ class AnalysisResultPanel(QWidget):
         self.content_layout.addStretch()
         self._animate_result_reveal(reveal_widgets)
 
+    def _answer_switcher(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("answerSwitcher")
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(8, 7, 8, 7)
+        layout.setSpacing(6)
+
+        label = QLabel("Results")
+        label.setObjectName("answerSwitcherLabel")
+        layout.addWidget(label)
+
+        self._switch_group = QButtonGroup(frame)
+        self._switch_group.setExclusive(True)
+
+        all_button = self._answer_switch_button("All")
+        all_button.setChecked(self._selected_answer_index is None)
+        self._switch_group.addButton(all_button, -1)
+        layout.addWidget(all_button)
+
+        assert self._result is not None
+        for index, answer in enumerate(self._result.answers):
+            button = self._answer_switch_button(str(index + 1))
+            button.setToolTip(answer.question or f"Result {index + 1}")
+            button.setChecked(self._selected_answer_index == index)
+            self._switch_group.addButton(button, index)
+            layout.addWidget(button)
+
+        self._switch_group.idClicked.connect(
+            lambda button_id: (
+                self.show_all_results()
+                if button_id < 0
+                else self.show_answer_result(button_id)
+            )
+        )
+        layout.addStretch()
+        return frame
+
+    @staticmethod
+    def _answer_switch_button(text: str) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("answerSwitchButton")
+        button.setCheckable(True)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setMinimumHeight(26)
+        return button
+
     def _clear_layout(self) -> None:
         if self._reveal_group is not None:
             self._reveal_group.stop()
@@ -324,6 +427,60 @@ class AnalysisResultPanel(QWidget):
         return label
 
     @staticmethod
+    def _answer_card(answer: AnswerResult, index: int) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("answerCard")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        number = QLabel(str(index))
+        number.setObjectName("answerNumber")
+        title = QLabel(answer.question or f"Question {index}")
+        title.setObjectName("answerQuestion")
+        title.setWordWrap(True)
+        title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        header.addWidget(number, alignment=Qt.AlignTop)
+        header.addWidget(title, stretch=1)
+        layout.addLayout(header)
+
+        body = QLabel(answer.answer or "No direct answer was returned.")
+        body.setObjectName("answerBody")
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(body)
+
+        references = []
+        for label, values in (
+            ("Metric", answer.supporting_metrics),
+            ("Table", answer.supporting_tables),
+            ("Chart", answer.supporting_charts),
+            ("Finding", answer.supporting_insights),
+        ):
+            references.extend(f"{label}: {value}" for value in values)
+        if references:
+            support_row = QHBoxLayout()
+            support_row.setContentsMargins(0, 0, 0, 0)
+            support_row.setSpacing(6)
+            for reference in references[:8]:
+                pill = QLabel(reference)
+                pill.setObjectName("answerSupportPill")
+                pill.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                support_row.addWidget(pill)
+            support_row.addStretch()
+            layout.addLayout(support_row)
+
+        if answer.confidence_or_notes:
+            notes = QLabel(answer.confidence_or_notes)
+            notes.setObjectName("answerNotes")
+            notes.setWordWrap(True)
+            notes.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            layout.addWidget(notes)
+
+        return frame
+
+    @staticmethod
     def _insight_row(insight: InsightResult) -> QFrame:
         frame = QFrame()
         frame.setObjectName(
@@ -358,6 +515,78 @@ QLabel#resultSummary {
     font-size: 14px;
     font-weight: 500;
     line-height: 1.5;
+}
+QFrame#answerSwitcher {
+    background: #F8F9FA;
+    border: 1px solid #E8EAED;
+    border-radius: 8px;
+}
+QLabel#answerSwitcherLabel {
+    color: #5F6368;
+    font-size: 11px;
+    font-weight: 700;
+}
+QPushButton#answerSwitchButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 13px;
+    color: #5F6368;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 650;
+}
+QPushButton#answerSwitchButton:hover {
+    background: #EEF3FD;
+    border-color: #D2E3FC;
+    color: #1A73E8;
+}
+QPushButton#answerSwitchButton:checked {
+    background: #E8F0FE;
+    border-color: #AECBFA;
+    color: #1A73E8;
+}
+QFrame#answerCard {
+    background: #FFFFFF;
+    border: 1px solid #DADCE0;
+    border-left: 3px solid #1A73E8;
+    border-radius: 8px;
+}
+QLabel#answerNumber {
+    background: #E8F0FE;
+    color: #1A73E8;
+    border-radius: 10px;
+    min-width: 20px;
+    max-width: 20px;
+    min-height: 20px;
+    max-height: 20px;
+    font-size: 11px;
+    font-weight: 700;
+    qproperty-alignment: AlignCenter;
+}
+QLabel#answerQuestion {
+    color: #202124;
+    font-size: 13px;
+    font-weight: 650;
+}
+QLabel#answerBody {
+    color: #3C4043;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.45;
+}
+QLabel#answerSupportPill {
+    background: #F1F3F4;
+    color: #5F6368;
+    border: 1px solid #E8EAED;
+    border-radius: 10px;
+    padding: 3px 7px;
+    font-size: 10px;
+    font-weight: 600;
+}
+QLabel#answerNotes {
+    color: #6B7280;
+    font-size: 11px;
+    font-weight: 500;
 }
 QFrame#metricCard {
     background: #F8F9FA;

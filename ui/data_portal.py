@@ -259,11 +259,11 @@ class DataPortalPage(QWidget):
         prompt = QLabel("NEXT STEPS")
         prompt.setObjectName("portalCapabilityPrompt")
         
-        self.analysis_card = QPushButton("Analyze Workbooks")
+        self.analysis_card = QPushButton("Data Analyze")
         self.analysis_card.setObjectName("portalModeAction")
         self.analysis_card.setCursor(Qt.PointingHandCursor)
         
-        self.cleaning_card = QPushButton("Clean Workbooks")
+        self.cleaning_card = QPushButton("Data Clean")
         self.cleaning_card.setObjectName("portalModeAction")
         self.cleaning_card.setCursor(Qt.PointingHandCursor)
         

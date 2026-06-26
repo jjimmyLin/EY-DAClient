@@ -28,6 +28,10 @@ _RUNTIME_CONTRACT = {
     },
     "rules": [
         "Use dataset_id and sheet_id, not display names.",
+        "First decompose the user query into atomic analysis requirements. "
+        "Numbered or bulleted user requests must become separate requirements.",
+        "Do not merge separate user questions into one requirement unless the "
+        "user explicitly asks for a combined answer.",
         "Cross-dataset alignment must use data.merge() or data.sql().",
         "Never add/subtract/divide Series from different datasets by row index.",
         "Load only needed columns when practical.",
@@ -37,10 +41,30 @@ _RUNTIME_CONTRACT = {
         "Do not use dfs[...] for large datasets.",
         "Keep SQL outputs bounded and aggregate before wide joins when possible.",
         "Define ANALYSIS_SPEC with requirements and datasets.",
+        "For every requirement, call result.add_answer(...) with the original "
+        "question/objective and the direct answer before marking it complete.",
         "Call result.mark_requirement(id) after each requirement is completed.",
-        "Use result.set_summary/add_metric/add_table/add_chart/add_insight.",
+        "Use result.set_summary for the global summary and "
+        "result.add_metric/add_table/add_chart/add_insight for supporting evidence.",
+        "When adding support, pass labels/titles to result.add_answer via "
+        "supporting_metrics/supporting_tables/supporting_charts/supporting_insights.",
         "Do not read files or access network/process/environment APIs.",
     ],
+    "result_contract": {
+        "answer": (
+            "result.add_answer(answer_id, question, answer, "
+            "supporting_metrics=[...], supporting_tables=[...], "
+            "supporting_charts=[...], supporting_insights=[...], "
+            "confidence_or_notes='...')"
+        ),
+        "summary": "result.set_summary(text)",
+        "metric": "result.add_metric(label, value, unit='', detail='')",
+        "table": "result.add_table(title, dataframe_or_rows)",
+        "chart": "result.add_chart(title, figure, caption='')",
+        "insight": "result.add_insight(title, detail)",
+        "warning": "result.add_warning(title, detail)",
+        "complete": "result.mark_requirement(requirement_id)",
+    },
 }
 
 
@@ -80,7 +104,8 @@ class PromptBuilder:
                     "Return a complete replacement script.",
                     "Preserve every requirement and explicit join rule.",
                     "Fix the actual runtime or semantic validation error.",
-                    "Keep ANALYSIS_SPEC and result.mark_requirement calls.",
+                    "Keep ANALYSIS_SPEC, result.add_answer calls, and "
+                    "result.mark_requirement calls.",
                 ],
             }
         )
@@ -142,6 +167,14 @@ class PromptBuilder:
                     "how",
                     "expected_relationship",
                     "many_to_many_confirmed",
+                ],
+                "multi_requirement_rules": [
+                    "Each numbered/bulleted user question should map to exactly "
+                    "one requirement unless it is only explanatory context.",
+                    "Requirement ids should be stable and human-readable, such "
+                    "as R1, R2, R3, in the same order as the user request.",
+                    "Generated Python must create one result.add_answer(...) "
+                    "for every non-clarification requirement.",
                 ],
             },
         }
@@ -230,14 +263,18 @@ class PromptBuilder:
                 "You repair Python data-analysis scripts. Return a complete "
                 "replacement script only. Preserve the analysis plan, use the "
                 "local data API, ANALYSIS_SPEC, result.mark_requirement(), and "
-                "structured result methods. Never access external files."
+                "structured result methods. Preserve result.add_answer() for "
+                "each requirement. Never access external files."
             )
         return (
             "You generate executable Python for local data analysis. Use the "
             "dataset IDs, sheet IDs, local data API, and structured result API "
             "described in context. For cross-dataset work use data.merge() or "
-            "data.sql(). Define ANALYSIS_SPEC and mark every completed "
-            "requirement. Return Python code only."
+            "data.sql(). First decompose the user query into ordered atomic "
+            "requirements. Define ANALYSIS_SPEC with one requirement per user "
+            "question, mark every completed requirement, and add one "
+            "result.add_answer() per requirement before marking it complete. "
+            "Return Python code only."
         )
 
     # Legacy helpers retained for callers outside the active workflow.

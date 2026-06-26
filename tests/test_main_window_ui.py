@@ -4,11 +4,12 @@ from types import SimpleNamespace
 
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QInputDialog, QWidget
 
 from core.preprocessor import FileMeta, SheetMeta
 from core.analysis_result import (
     AnalysisResult,
+    AnswerResult,
     InsightResult,
     MetricResult,
     TableResult,
@@ -747,6 +748,22 @@ def test_structured_result_and_analysis_plan_render_in_primary_workspace(qapp):
     window.result_output.set_result(
         AnalysisResult(
             summary="Product A leads total revenue.",
+            answers=[
+                AnswerResult(
+                    "A",
+                    "Calculate revenue by product",
+                    "Product A leads with 80 CNY.",
+                    supporting_metrics=["Total revenue"],
+                    supporting_tables=["Revenue by product"],
+                    supporting_insights=["Leading product"],
+                ),
+                AnswerResult(
+                    "B",
+                    "Highlight the leading product",
+                    "Product A contributes the largest share.",
+                    supporting_insights=["Leading product"],
+                ),
+            ],
             metrics=[MetricResult("Total revenue", 115.0, " CNY")],
             tables=[
                 TableResult(
@@ -777,6 +794,23 @@ def test_structured_result_and_analysis_plan_render_in_primary_workspace(qapp):
         type(window.analysis_plan_label),
         "resultBlockTitle",
     )
+    assert window.result_output.findChild(QWidget, "answerSwitcher")
+    switch_buttons = window.result_output.findChildren(
+        type(window.header_export_btn),
+        "answerSwitchButton",
+    )
+    assert [button.text() for button in switch_buttons[:3]] == ["All", "1", "2"]
+
+    switch_buttons[1].click()
+    qapp.processEvents()
+    answer_questions = [
+        label.text()
+        for label in window.result_output.findChildren(
+            type(window.analysis_plan_label),
+            "answerQuestion",
+        )
+    ]
+    assert answer_questions == ["Calculate revenue by product"]
 
     window.close()
 
@@ -797,7 +831,7 @@ def test_analysis_result_enables_basic_excel_export(qapp, monkeypatch, tmp_path)
     monkeypatch.setattr(
         window,
         "_start_result_export",
-        lambda output_path: started.append(output_path),
+        lambda output_path, **kwargs: started.append((output_path, kwargs)),
     )
 
     window._on_export_result_clicked()
@@ -805,7 +839,50 @@ def test_analysis_result_enables_basic_excel_export(qapp, monkeypatch, tmp_path)
 
     assert window.header_export_btn.isVisible()
     assert window.export_result_action.isEnabled()
-    assert started == [str(destination) + ".xlsx"]
+    assert started[0][0] == str(destination) + ".xlsx"
+    assert started[0][1]["export_scope"] == "All results"
+    window.close()
+
+
+def test_analysis_result_export_can_select_one_answer(qapp, monkeypatch, tmp_path):
+    window = MainWindow()
+    window.show()
+    window._start_new_task()
+    window._current_analysis_result = AnalysisResult(
+        summary="All done.",
+        answers=[
+            AnswerResult("R1", "Question one", "Answer one"),
+            AnswerResult("R2", "Question two", "Answer two"),
+        ],
+    )
+    window.result_output.set_result(window._current_analysis_result)
+    window._refresh_result_export_state()
+    destination = tmp_path / "selected-result.xlsx"
+    started = []
+
+    monkeypatch.setattr(
+        QInputDialog,
+        "getItem",
+        lambda *args, **kwargs: ("Result 2: Question two", True),
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(destination), "Excel Workbook (*.xlsx)"),
+    )
+    monkeypatch.setattr(
+        window,
+        "_start_result_export",
+        lambda output_path, **kwargs: started.append((output_path, kwargs)),
+    )
+
+    window._on_export_result_clicked()
+
+    assert started[0][0] == str(destination)
+    assert started[0][1]["export_scope"] == "Result 2"
+    selected = started[0][1]["export_result"]
+    assert selected.answers[0].answer_id == "R2"
+    assert selected.answers[0].answer == "Answer two"
     window.close()
 
 

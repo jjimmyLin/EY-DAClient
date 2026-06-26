@@ -111,6 +111,7 @@ def test_workflow_generates_code_from_single_backend_call(tmp_path, monkeypatch)
         f'df = data.get("{dataset_id}", "{sheet_id}")\n'
         'print("rows:", len(df))\n'
         'print("total:", (df["price"] * df["quantity"]).sum())\n'
+        'result.add_answer("R1", "Calculate total revenue", "Total revenue was calculated.")\n'
         'result.mark_requirement("R1")'
     )
     fake = FakeClient([code], _analysis_plan(files_meta))
@@ -162,6 +163,7 @@ def test_workflow_run_executes_generated_code_locally(tmp_path, monkeypatch):
         'valid = df[df["price"].notna()]\n'
         'print("audited columns: price, quantity")\n'
         'print("total:", (valid["price"] * valid["quantity"]).sum())\n'
+        'result.add_answer("R1", "Calculate total revenue", "Total revenue is 115.0.")\n'
         'result.mark_requirement("R1")'
     )
     fake = FakeClient([code], _analysis_plan(files_meta))
@@ -196,6 +198,7 @@ summary = (
 )
 summary.columns = ["product", "quantity"]
 result.add_table("Quantity", dataframe=summary)
+result.add_answer("R1", "Summarize quantity by product", "Quantity summary completed.", supporting_tables=["Quantity"])
 result.mark_requirement("R1")
 """
     repaired_code = f"""
@@ -208,6 +211,7 @@ summary = (
 )
 result.set_summary("Repair completed.")
 result.add_table("Quantity", dataframe=summary)
+result.add_answer("R1", "Summarize quantity by product", "Quantity summary completed.", supporting_tables=["Quantity"])
 result.mark_requirement("R1")
 """
     fake = FakeClient(

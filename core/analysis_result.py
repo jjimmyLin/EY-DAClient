@@ -70,8 +70,21 @@ class InsightResult:
 
 
 @dataclass
+class AnswerResult:
+    answer_id: str
+    question: str
+    answer: str
+    supporting_metrics: list[str] = field(default_factory=list)
+    supporting_tables: list[str] = field(default_factory=list)
+    supporting_charts: list[str] = field(default_factory=list)
+    supporting_insights: list[str] = field(default_factory=list)
+    confidence_or_notes: str = ""
+
+
+@dataclass
 class AnalysisResult:
     summary: str = ""
+    answers: list[AnswerResult] = field(default_factory=list)
     metrics: list[MetricResult] = field(default_factory=list)
     tables: list[TableResult] = field(default_factory=list)
     charts: list[ChartResult] = field(default_factory=list)
@@ -83,11 +96,94 @@ class AnalysisResult:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def answer_result(self, answer_index: int) -> "AnalysisResult":
+        """Return a focused result containing one answer and its references."""
+        answer = self.answers[answer_index]
+
+        def selected(items: list[Any], names: list[str], attr: str) -> list[Any]:
+            wanted = {str(name) for name in names if str(name).strip()}
+            if not wanted:
+                return []
+            return [
+                item
+                for item in items
+                if str(getattr(item, attr, "")) in wanted
+            ]
+
+        return AnalysisResult(
+            summary="",
+            answers=[answer],
+            metrics=selected(
+                self.metrics,
+                answer.supporting_metrics,
+                "label",
+            ),
+            tables=selected(
+                self.tables,
+                answer.supporting_tables,
+                "title",
+            ),
+            charts=selected(
+                self.charts,
+                answer.supporting_charts,
+                "title",
+            ),
+            insights=selected(
+                self.insights,
+                answer.supporting_insights,
+                "title",
+            ),
+            audit=list(self.audit),
+            completed_requirements=[
+                item
+                for item in self.completed_requirements
+                if str(item) == answer.answer_id
+            ],
+            raw_output="",
+        )
+
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "AnalysisResult":
         payload = payload or {}
         return cls(
             summary=str(payload.get("summary") or ""),
+            answers=[
+                AnswerResult(
+                    answer_id=str(
+                        item.get("answer_id")
+                        or item.get("id")
+                        or f"answer_{index}"
+                    ),
+                    question=str(item.get("question") or ""),
+                    answer=str(item.get("answer") or item.get("summary") or ""),
+                    supporting_metrics=[
+                        str(value)
+                        for value in item.get("supporting_metrics", []) or []
+                    ],
+                    supporting_tables=[
+                        str(value)
+                        for value in item.get("supporting_tables", []) or []
+                    ],
+                    supporting_charts=[
+                        str(value)
+                        for value in item.get("supporting_charts", []) or []
+                    ],
+                    supporting_insights=[
+                        str(value)
+                        for value in item.get("supporting_insights", []) or []
+                    ],
+                    confidence_or_notes=str(
+                        item.get("confidence_or_notes")
+                        or item.get("notes")
+                        or ""
+                    ),
+                )
+                for index, item in enumerate(
+                    payload.get("answers", []) or [],
+                    start=1,
+                )
+                if isinstance(item, dict)
+            ],
             metrics=[
                 MetricResult(**item)
                 for item in payload.get("metrics", [])
@@ -134,6 +230,50 @@ class ResultCollector:
 
     def set_summary(self, text: Any) -> None:
         self._result.summary = str(text).strip()
+
+    def add_answer(
+        self,
+        answer_id: Any,
+        question: Any,
+        answer: Any,
+        *,
+        supporting_metrics: Any = None,
+        supporting_tables: Any = None,
+        supporting_charts: Any = None,
+        supporting_insights: Any = None,
+        confidence_or_notes: Any = "",
+        notes: Any = "",
+    ) -> None:
+        self._result.answers.append(
+            AnswerResult(
+                answer_id=str(answer_id).strip(),
+                question=str(question).strip(),
+                answer=str(answer).strip(),
+                supporting_metrics=[
+                    str(value)
+                    for value in supporting_metrics or []
+                    if str(value).strip()
+                ],
+                supporting_tables=[
+                    str(value)
+                    for value in supporting_tables or []
+                    if str(value).strip()
+                ],
+                supporting_charts=[
+                    str(value)
+                    for value in supporting_charts or []
+                    if str(value).strip()
+                ],
+                supporting_insights=[
+                    str(value)
+                    for value in supporting_insights or []
+                    if str(value).strip()
+                ],
+                confidence_or_notes=str(
+                    confidence_or_notes or notes or ""
+                ).strip(),
+            )
+        )
 
     def add_metric(
         self,

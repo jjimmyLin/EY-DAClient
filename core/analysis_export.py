@@ -57,8 +57,9 @@ class AnalysisExportService:
         partial.unlink(missing_ok=True)
 
         logger.info(
-            "Analysis export started output=%s metrics=%s tables=%s charts=%s",
+            "Analysis export started output=%s answers=%s metrics=%s tables=%s charts=%s",
             destination,
+            len(result.answers),
             len(result.metrics),
             len(result.tables),
             len(result.charts),
@@ -144,8 +145,49 @@ class AnalysisExportService:
                 row += 1
             row += 1
 
+        if result.answers:
+            row = self._section_title(sheet, row, "Answers", 4)
+            self._write_header(
+                sheet,
+                row,
+                ["ID", "Question", "Answer", "Notes / supporting evidence"],
+            )
+            row += 1
+            for answer in result.answers:
+                support = []
+                if answer.supporting_metrics:
+                    support.append(
+                        "Metrics: " + ", ".join(answer.supporting_metrics)
+                    )
+                if answer.supporting_tables:
+                    support.append(
+                        "Tables: " + ", ".join(answer.supporting_tables)
+                    )
+                if answer.supporting_charts:
+                    support.append(
+                        "Charts: " + ", ".join(answer.supporting_charts)
+                    )
+                if answer.supporting_insights:
+                    support.append(
+                        "Findings: " + ", ".join(answer.supporting_insights)
+                    )
+                if answer.confidence_or_notes:
+                    support.append(answer.confidence_or_notes)
+                values = [
+                    answer.answer_id,
+                    answer.question,
+                    answer.answer,
+                    "\n".join(support),
+                ]
+                for column, value in enumerate(values, start=1):
+                    cell = sheet.cell(row, column, self._excel_value(value))
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
+                row += 1
+            row += 1
+
         if result.summary:
-            row = self._section_title(sheet, row, "Analysis summary", 4)
+            title = "Global summary" if result.answers else "Analysis summary"
+            row = self._section_title(sheet, row, title, 4)
             sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
             cell = sheet.cell(row, 1, self._excel_value(result.summary))
             cell.alignment = Alignment(wrap_text=True, vertical="top")

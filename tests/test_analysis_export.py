@@ -5,6 +5,7 @@ from openpyxl import load_workbook
 from core.analysis_export import AnalysisExportService
 from core.analysis_result import (
     AnalysisResult,
+    AnswerResult,
     InsightResult,
     MetricResult,
     TableResult,
@@ -15,6 +16,16 @@ def test_analysis_result_exports_to_structured_excel(tmp_path):
     destination = tmp_path / "analysis-result.xlsx"
     result = AnalysisResult(
         summary="Product A leads total revenue.",
+        answers=[
+            AnswerResult(
+                "A",
+                "Calculate revenue by product",
+                "Product A leads with 80 CNY.",
+                supporting_metrics=["Total revenue"],
+                supporting_tables=["Revenue by product"],
+                confidence_or_notes="Calculated from price and quantity.",
+            )
+        ],
         metrics=[
             MetricResult("Total revenue", 115.0, "CNY", "Across all products"),
         ],
@@ -57,6 +68,16 @@ def test_analysis_result_exports_to_structured_excel(tmp_path):
     assert summary["A1"].value == "Analysis Result"
     assert any(
         cell.value == "Product A leads total revenue."
+        for row in summary.iter_rows()
+        for cell in row
+    )
+    assert any(
+        cell.value == "Calculate revenue by product"
+        for row in summary.iter_rows()
+        for cell in row
+    )
+    assert any(
+        cell.value == "Product A leads with 80 CNY."
         for row in summary.iter_rows()
         for cell in row
     )

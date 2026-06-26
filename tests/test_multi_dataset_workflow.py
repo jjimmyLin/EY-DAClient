@@ -133,6 +133,7 @@ joined = data.merge(a, b, left_name="{first.runtime_key}", right_name="{second.r
 joined["combined"] = joined["a"] + joined["b"]
 result.set_summary("Combined two datasets.")
 result.add_table("Combined", joined)
+result.add_answer("R1", "a + b", "Combined values were calculated by id.", supporting_tables=["Combined"])
 result.mark_requirement("R1")
 """
 
@@ -177,6 +178,7 @@ abc = data.merge(ab, c, left_name="{first.runtime_key}", right_name="{third.runt
 abc["metric"] = (abc["a"] + abc["b"]) / abc["c"]
 result.set_summary("Three datasets aligned by id.")
 result.add_table("Metric", abc.sort_values("id"))
+result.add_answer("R1", "(a + b) / c", "Metric was calculated after aligning all datasets by id.", supporting_tables=["Metric"])
 result.mark_requirement("R1")
 """
 
@@ -213,6 +215,7 @@ combined = data.sql(
 )
 result.set_summary("DuckDB joined cached sources.")
 result.add_metric("Total", combined["combined"].sum())
+result.add_answer("R1", "sum(a + b)", "The total combined value is 37.", supporting_metrics=["Total"])
 result.mark_requirement("R1")
 '''
 
@@ -289,6 +292,7 @@ ANALYSIS_SPEC = {{"requirements": ["R1"], "datasets": ["{file_meta.runtime_key}"
 df = data.get("{file_meta.runtime_key}", "{file_meta.sheets[0].sheet_id}", columns=["id"])
 result.set_summary("Counted rows.")
 result.add_metric("Rows", len(df))
+result.add_answer("R1", "Count rows", f"Rows counted: {{len(df)}}.", supporting_metrics=["Rows"])
 result.mark_requirement("R1")
 """
     monkeypatch.setattr(

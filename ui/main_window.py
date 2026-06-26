@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QMenu,
     QMessageBox,
+    QInputDialog,
 )
 from ui.history_page import HistoryPage
 from ui.decision_panel import DecisionPanel, OptionItem, DECISION_PANEL_STYLE
@@ -3002,7 +3003,10 @@ class MainWindow(QMainWindow):
     def _on_export_result_clicked(self) -> None:
         if self._current_analysis_result is None or self._export_thread is not None:
             return
-        default_name = self._default_export_name()
+        export_result, export_scope = self._select_result_for_export()
+        if export_result is None:
+            return
+        default_name = self._default_export_name(export_scope)
         output_path, _ = QFileDialog.getSaveFileName(
             self,
             "Export analysis result",
@@ -3013,9 +3017,45 @@ class MainWindow(QMainWindow):
             return
         if Path(output_path).suffix.lower() != ".xlsx":
             output_path += ".xlsx"
-        self._start_result_export(output_path)
+        self._start_result_export(
+            output_path,
+            export_result=export_result,
+            export_scope=export_scope,
+        )
 
-    def _default_export_name(self) -> str:
+    def _select_result_for_export(self) -> tuple[AnalysisResult | None, str]:
+        result = self._current_analysis_result
+        if result is None:
+            return None, "All results"
+        if len(result.answers) <= 1:
+            return result, "All results"
+
+        options = ["All results"]
+        options.extend(
+            f"Result {index}: {answer.question[:80]}"
+            for index, answer in enumerate(result.answers, start=1)
+        )
+        current_index = 0
+        selected_index = self.result_output.selected_answer_index()
+        if selected_index is not None:
+            current_index = selected_index + 1
+
+        choice, accepted = QInputDialog.getItem(
+            self,
+            "Choose export scope",
+            "Export which result?",
+            options,
+            current_index,
+            False,
+        )
+        if not accepted:
+            return None, ""
+        if choice == options[0]:
+            return result, "All results"
+        answer_index = options.index(choice) - 1
+        return result.answer_result(answer_index), choice.split(":", 1)[0]
+
+    def _default_export_name(self, export_scope: str = "All results") -> str:
         scope = next(
             (
                 meta.display_name or meta.file_name
@@ -3024,25 +3064,35 @@ class MainWindow(QMainWindow):
             "analysis",
         )
         stem = Path(scope).stem
+        if export_scope and export_scope != "All results":
+            stem = f"{stem}-{export_scope.lower().replace(' ', '-')}"
         safe_stem = re.sub(r'[<>:"/\\|?*]+', "_", stem).strip(" ._")
         safe_stem = safe_stem or "analysis"
         timestamp = datetime.now().strftime("%Y%m%d-%H%M")
         return str(Path.home() / "Documents" / f"{safe_stem}-result-{timestamp}.xlsx")
 
-    def _start_result_export(self, output_path: str) -> None:
+    def _start_result_export(
+        self,
+        output_path: str,
+        *,
+        export_result: AnalysisResult | None = None,
+        export_scope: str = "All results",
+    ) -> None:
         if self._current_analysis_result is None or self._export_thread is not None:
             return
+        result = export_result or self._current_analysis_result
         metadata = {
             "Datasets": ", ".join(
                 meta.display_name or meta.file_name
                 for meta in (self._pending_files_meta or [])
             ),
             "Request": self._pending_query or "",
+            "Export scope": export_scope,
             "Task ID": self._active_task_id or "",
         }
         thread = QThread(self)
         worker = AnalysisExportWorker(
-            self._current_analysis_result,
+            result,
             output_path,
             metadata,
         )

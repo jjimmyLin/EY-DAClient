@@ -249,6 +249,17 @@ class GeneratedCodeContractValidator:
                     issues.append(
                         f"ANALYSIS_SPEC omits requirements: {missing}"
                     )
+            answer_ids, has_dynamic_answer = self._result_answer_calls(tree)
+            if not answer_ids and not has_dynamic_answer:
+                issues.append(
+                    "Generated code must call result.add_answer(...) for each requirement"
+                )
+            elif answer_ids:
+                missing_answers = sorted(set(requirements) - answer_ids)
+                if missing_answers and not has_dynamic_answer:
+                    issues.append(
+                        f"result.add_answer omits requirements: {missing_answers}"
+                    )
 
         referenced = self._dataset_references(tree)
         unknown = sorted(referenced - datasets)
@@ -292,6 +303,25 @@ class GeneratedCodeContractValidator:
                 return None
             return value if isinstance(value, dict) else None
         return None
+
+    @staticmethod
+    def _result_answer_calls(tree: ast.AST) -> tuple[set[str], bool]:
+        answer_ids: set[str] = set()
+        has_dynamic_answer = False
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "result"
+                and node.func.attr == "add_answer"
+            ):
+                continue
+            if node.args and isinstance(node.args[0], ast.Constant):
+                answer_ids.add(str(node.args[0].value))
+            else:
+                has_dynamic_answer = True
+        return answer_ids, has_dynamic_answer
 
     @staticmethod
     def _dataset_references(tree: ast.AST) -> set[str]:
