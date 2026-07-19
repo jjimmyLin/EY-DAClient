@@ -58,6 +58,7 @@ class SheetMeta:
     unique_counts: dict[str, int] = field(default_factory=dict)
     unique_rates: dict[str, float] = field(default_factory=dict)
     type_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    semantic_roles: dict[str, list[str]] = field(default_factory=dict)
 
     def to_prompt_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +74,37 @@ class SheetMeta:
             "sample": self.head_sample,
             "describe": self.describe,
             "unique_values": self.unique_values,
+            "semantic_roles": self.semantic_roles,
+        }
+
+
+@dataclass
+class SheetGroupMeta:
+    group_id: str
+    group_type: str
+    sheet_ids: list[str]
+    sheet_names: list[str]
+    columns: list[str]
+    dtype_families: dict[str, str]
+    total_rows: int
+    confidence: float
+    reason: str
+
+    def to_prompt_dict(self) -> dict[str, Any]:
+        return {
+            "group_id": self.group_id,
+            "type": self.group_type,
+            "sheet_ids": self.sheet_ids,
+            "sheet_names": self.sheet_names,
+            "columns": self.columns,
+            "dtype_families": self.dtype_families,
+            "total_rows": self.total_rows,
+            "confidence": self.confidence,
+            "reason": self.reason,
+            "runtime_access": (
+                f'data.union_sheets("<dataset_id>", group_id="{self.group_id}", '
+                "columns=[...])"
+            ),
         }
 
 
@@ -83,6 +115,7 @@ class FileMeta:
     file_size_kb: float
     sheet_count: int
     sheets: list[SheetMeta] = field(default_factory=list)
+    sheet_groups: list[SheetGroupMeta] = field(default_factory=list)
     dataset_id: str = ""
     display_name: str = ""
     source_fingerprint: str = ""
@@ -106,6 +139,10 @@ class FileMeta:
             "size_kb": round(self.file_size_kb, 1),
             "profile_mode": self.profile_mode,
             "profile_sample_rows": self.profile_sample_rows,
+            "sheet_groups": [
+                group.to_prompt_dict()
+                for group in self.sheet_groups
+            ],
             "sheets": [sheet.to_prompt_dict() for sheet in self.sheets],
         }
 
@@ -182,6 +219,7 @@ class Preprocessor:
             )
             profile_mode = "full"
 
+        sheet_groups = self._detect_sheet_groups(dataset_id, sheets)
         self._emit_progress(progress_callback, "ready", 100, path.name)
         file_meta = FileMeta(
             file_path=str(path.resolve()),
@@ -192,6 +230,7 @@ class Preprocessor:
             file_size_kb=size_kb,
             sheet_count=len(sheets),
             sheets=sheets,
+            sheet_groups=sheet_groups,
             profile_mode=profile_mode,
             profile_sample_rows=(
                 self._sample_rows if profile_mode == "sampled" else sum(sheet.rows for sheet in sheets)
@@ -206,6 +245,93 @@ class Preprocessor:
             len(sheets),
         )
         return file_meta
+
+    @classmethod
+    def _detect_sheet_groups(
+        cls,
+        dataset_id: str,
+        sheets: list[SheetMeta],
+    ) -> list[SheetGroupMeta]:
+        buckets: dict[tuple[tuple[str, ...], tuple[str, ...]], list[SheetMeta]] = {}
+        for sheet in sheets:
+            if not sheet.columns:
+                continue
+            columns = tuple(cls._normalize_group_column(column) for column in sheet.columns)
+            dtype_families = tuple(
+                cls._dtype_family(sheet.dtypes.get(column, ""))
+                for column in sheet.columns
+            )
+            buckets.setdefault((columns, dtype_families), []).append(sheet)
+
+        groups: list[SheetGroupMeta] = []
+        for (columns_signature, dtype_signature), grouped_sheets in buckets.items():
+            if len(grouped_sheets) < 2:
+                continue
+            raw_columns = list(grouped_sheets[0].columns)
+            sheet_ids = [
+                sheet.sheet_id or sheet.sheet_name
+                for sheet in grouped_sheets
+            ]
+            signature_payload = json.dumps(
+                {
+                    "dataset_id": dataset_id,
+                    "columns": columns_signature,
+                    "dtypes": dtype_signature,
+                    "sheet_ids": sheet_ids,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            group_hash = hashlib.sha256(
+                signature_payload.encode("utf-8")
+            ).hexdigest()[:12]
+            confidence = cls._sheet_group_confidence(grouped_sheets)
+            groups.append(
+                SheetGroupMeta(
+                    group_id=f"sg_{group_hash}",
+                    group_type="same_schema_append",
+                    sheet_ids=sheet_ids,
+                    sheet_names=[sheet.sheet_name for sheet in grouped_sheets],
+                    columns=raw_columns,
+                    dtype_families=dict(zip(raw_columns, dtype_signature)),
+                    total_rows=sum(sheet.rows for sheet in grouped_sheets),
+                    confidence=confidence,
+                    reason=(
+                        "Sheets share the same column order and compatible type "
+                        "families, so they can be appended with UNION ALL."
+                    ),
+                )
+            )
+        return sorted(groups, key=lambda group: group.sheet_names)
+
+    @staticmethod
+    def _normalize_group_column(column: str) -> str:
+        return str(column)
+
+    @staticmethod
+    def _dtype_family(dtype: str) -> str:
+        normalized = str(dtype).lower()
+        if any(token in normalized for token in ("int", "float", "double", "decimal")):
+            return "number"
+        if any(token in normalized for token in ("date", "time", "timestamp", "datetime")):
+            return "datetime"
+        if "bool" in normalized:
+            return "boolean"
+        if any(token in normalized for token in ("string", "object", "utf8", "large_string")):
+            return "text"
+        return normalized or "unknown"
+
+    @staticmethod
+    def _sheet_group_confidence(sheets: list[SheetMeta]) -> float:
+        confidence = 0.92
+        if len(sheets) >= 3:
+            confidence += 0.02
+        if any(sheet.rows >= 1_000_000 for sheet in sheets):
+            confidence += 0.04
+        names = [sheet.sheet_name for sheet in sheets]
+        if names == sorted(names):
+            confidence += 0.01
+        return round(min(confidence, 0.99), 2)
 
     def _process_small_workbook(
         self,
@@ -295,6 +421,11 @@ class Preprocessor:
             unique_counts=unique_counts,
             unique_rates=unique_rates,
             type_profiles=type_profiles,
+            semantic_roles=self._detect_semantic_roles(
+                [str(column) for column in dataframe.columns],
+                {str(column): str(dtype) for column, dtype in dataframe.dtypes.items()},
+                type_profiles,
+            ),
         )
 
     def _process_large_xlsx(
@@ -497,6 +628,11 @@ class Preprocessor:
             unique_counts=unique_counts,
             unique_rates=unique_rates,
             type_profiles=type_profiles,
+            semantic_roles=self._detect_semantic_roles(
+                headers,
+                dtypes,
+                type_profiles,
+            ),
         )
 
     @staticmethod
@@ -775,6 +911,232 @@ class Preprocessor:
             }
         return profiles
 
+    @classmethod
+    def _detect_semantic_roles(
+        cls,
+        columns: list[str],
+        dtypes: dict[str, str],
+        type_profiles: dict[str, dict[str, Any]],
+    ) -> dict[str, list[str]]:
+        roles: dict[str, list[str]] = {}
+        for column in columns:
+            column_roles = cls._semantic_roles_for_column(
+                column,
+                dtypes.get(column, ""),
+                type_profiles.get(column, {}),
+            )
+            for role in column_roles:
+                roles.setdefault(role, []).append(column)
+        return roles
+
+    @classmethod
+    def _semantic_roles_for_column(
+        cls,
+        column: str,
+        dtype: str,
+        type_profile: dict[str, Any],
+    ) -> list[str]:
+        raw = str(column).strip().lower()
+        compact = "".join(character for character in raw if character.isalnum())
+        dtype_lower = str(dtype).lower()
+        numeric_like = cls._is_numeric_dtype(dtype_lower) or (
+            type_profile.get("inferred_type") == "numeric"
+        )
+        datetime_like = any(
+            token in dtype_lower
+            for token in ("date", "time", "timestamp", "datetime")
+        )
+        roles: list[str] = []
+
+        def add(role: str) -> None:
+            if role not in roles:
+                roles.append(role)
+
+        if datetime_like or cls._matches_any(
+            raw,
+            compact,
+            (
+                "date",
+                "postingdate",
+                "documentdate",
+                "transactiondate",
+                "createddate",
+                "日期",
+                "入账日期",
+                "过账日期",
+                "凭证日期",
+            ),
+        ):
+            add("date")
+        if cls._matches_any(
+            raw,
+            compact,
+            (
+                "period",
+                "fiscalperiod",
+                "fiscalyear",
+                "yearmonth",
+                "month",
+                "期间",
+                "会计期间",
+                "年月",
+                "月份",
+            ),
+        ):
+            add("period")
+        if cls._matches_any(
+            raw,
+            compact,
+            (
+                "account",
+                "accountcode",
+                "accountnumber",
+                "glaccount",
+                "g/l account",
+                "acct",
+                "科目",
+                "会计科目",
+                "总账科目",
+                "账户",
+            ),
+        ):
+            add("account")
+        if numeric_like and cls._matches_any(
+            raw,
+            compact,
+            (
+                "amount",
+                "amt",
+                "value",
+                "balance",
+                "金额",
+                "余额",
+                "本币金额",
+                "原币金额",
+            ),
+        ):
+            add("amount")
+        if numeric_like and cls._matches_any(
+            raw,
+            compact,
+            ("debit", "dramount", "debitamount", "借方", "借方金额"),
+        ):
+            add("debit")
+            add("amount")
+        if numeric_like and cls._matches_any(
+            raw,
+            compact,
+            ("credit", "cramount", "creditamount", "贷方", "贷方金额"),
+        ):
+            add("credit")
+            add("amount")
+        if cls._matches_any(
+            raw,
+            compact,
+            (
+                "document",
+                "documentno",
+                "documentnumber",
+                "docno",
+                "voucherno",
+                "journalentry",
+                "entryid",
+                "凭证",
+                "凭证号",
+                "单据",
+                "分录",
+            ),
+        ):
+            add("document")
+        if cls._matches_any(
+            raw,
+            compact,
+            ("vendor", "supplier", "供应商", "供货商"),
+        ):
+            add("vendor")
+        if cls._matches_any(
+            raw,
+            compact,
+            ("customer", "client", "客户"),
+        ):
+            add("customer")
+        if cls._matches_any(
+            raw,
+            compact,
+            ("company", "companycode", "entity", "bukrs", "公司", "公司代码", "法人"),
+        ):
+            add("company")
+        if cls._matches_any(
+            raw,
+            compact,
+            ("costcenter", "cost centre", "成本中心"),
+        ):
+            add("cost_center")
+        if cls._matches_any(
+            raw,
+            compact,
+            ("profitcenter", "利润中心"),
+        ):
+            add("profit_center")
+        if cls._matches_any(
+            raw,
+            compact,
+            ("currency", "curr", "币种", "货币"),
+        ):
+            add("currency")
+        if cls._matches_any(
+            raw,
+            compact,
+            (
+                "description",
+                "text",
+                "memo",
+                "摘要",
+                "说明",
+                "描述",
+            ),
+        ):
+            add("description")
+        if cls._matches_any(
+            raw,
+            compact,
+            (
+                "createdby",
+                "preparedby",
+                "postedby",
+                "user",
+                "operator",
+                "制单人",
+                "录入人",
+                "创建人",
+                "用户",
+            ),
+        ):
+            add("user")
+        return roles
+
+    @staticmethod
+    def _matches_any(raw: str, compact: str, patterns: tuple[str, ...]) -> bool:
+        for pattern in patterns:
+            normalized = pattern.lower()
+            compact_pattern = "".join(
+                character
+                for character in normalized
+                if character.isalnum()
+            )
+            if normalized and normalized in raw:
+                return True
+            if compact_pattern and compact_pattern in compact:
+                return True
+        return False
+
+    @staticmethod
+    def _is_numeric_dtype(dtype: str) -> bool:
+        return any(
+            token in dtype
+            for token in ("int", "float", "double", "decimal", "number")
+        )
+
     def _update_stream_profile(
         self,
         records: list[dict[str, Any]],
@@ -900,6 +1262,10 @@ class Preprocessor:
             "profile_mode": file_meta.profile_mode,
             "profile_sample_rows": file_meta.profile_sample_rows,
             "sheet_count": file_meta.sheet_count,
+            "sheet_groups": [
+                group.to_prompt_dict()
+                for group in file_meta.sheet_groups
+            ],
             "sheets": [sheet.to_prompt_dict() for sheet in file_meta.sheets],
         }
         manifest_path.write_text(

@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>安永数智助手 · EY intelligent DA Client 产品介绍</title>
+<style>
+  :root {
+    --ey-black: #000000;
+    --ey-dark: #2E2E38;
+    --ey-panel: #1A1A22;
+    --ey-panel-2: #23232C;
+    --ey-border: #3A3A45;
+    --ey-yellow: #FFE600;
+    --ey-yellow-soft: #FFEE58;
+    --ey-text: #F2F2F2;
+    --ey-text-sub: #B8B8C0;
+    --ey-text-mute: #7A7A85;
+    --ey-success: #2ECC71;
+    --ey-info: #3498DB;
+    --ey-danger: #E74C3C;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    background: var(--ey-black);
+    color: var(--ey-text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.7;
+    scroll-behavior: smooth;
+    overflow-x: hidden;
+  }
+
+  nav {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 40px;
+    background: rgba(0, 0, 0, .86);
+    border-bottom: 1px solid var(--ey-border);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  .nav-brand {
+    color: var(--ey-yellow);
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .nav-brand::before {
+    content: "■";
+    margin-right: 8px;
+    font-size: 14px;
+  }
+
+  .nav-links {
+    display: flex;
+    gap: 28px;
+  }
+
+  .nav-links a {
+    color: var(--ey-text-sub);
+    text-decoration: none;
+    font-size: 13px;
+    transition: color .2s ease;
+  }
+
+  .nav-links a:hover { color: var(--ey-yellow); }
+
+  section {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 100px 8% 80px;
+  }
+
+  .section-eyebrow {
+    color: var(--ey-yellow);
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  .section-title {
+    color: var(--ey-text);
+    font-size: 38px;
+    font-weight: 700;
+    margin-bottom: 20px;
+  }
+
+  .section-subtitle {
+    max-width: 860px;
+    color: var(--ey-text-sub);
+    font-size: 17px;
+    margin-bottom: 48px;
+  }
+
+  .accent {
+    color: var(--ey-yellow);
+    border-bottom: 3px solid var(--ey-yellow);
+    padding-bottom: 2px;
+  }
+
+  .hero {
+    min-height: 100vh;
+    max-width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(440px, 660px);
+    align-items: center;
+    gap: 58px;
+    padding: 112px 8% 72px;
+    background:
+      radial-gradient(ellipse at top right, rgba(255, 230, 0, .09), transparent 58%),
+      radial-gradient(ellipse at bottom left, rgba(255, 230, 0, .045), transparent 52%),
+      var(--ey-black);
+  }
+
+  .hero-eyebrow {
+    color: var(--ey-yellow);
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    margin-bottom: 24px;
+  }
+
+  .hero-eyebrow::before {
+    content: "▶ ";
+  }
+
+  .hero-title {
+    font-size: 68px;
+    font-weight: 800;
+    line-height: 1.12;
+    margin-bottom: 24px;
+  }
+
+  .hero-title .hl {
+    background: linear-gradient(135deg, var(--ey-yellow), var(--ey-yellow-soft));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .hero-tagline {
+    max-width: 760px;
+    color: var(--ey-text-sub);
+    font-size: 22px;
+    margin-bottom: 42px;
+  }
+
+  .hero-actions {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .hero-cta {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--ey-yellow);
+    color: var(--ey-black);
+    padding: 16px 36px;
+    border-radius: 4px;
+    font-size: 15px;
+    font-weight: 700;
+    text-decoration: none;
+    transition: transform .2s ease, box-shadow .2s ease;
+  }
+
+  .hero-cta:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(255, 230, 0, .3);
+  }
+
+  .hero-link {
+    color: var(--ey-text-sub);
+    text-decoration: none;
+    border-bottom: 1px solid var(--ey-border);
+    padding-bottom: 4px;
+    font-size: 14px;
+    transition: color .2s ease, border-color .2s ease;
+  }
+
+  .hero-link:hover {
+    color: var(--ey-yellow);
+    border-color: var(--ey-yellow);
+  }
+
+  .hero-meta {
+    margin-top: 58px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 34px;
+    color: var(--ey-text-mute);
+    font-size: 13px;
+  }
+
+  .hero-meta div {
+    border-left: 2px solid var(--ey-yellow);
+    padding-left: 12px;
+  }
+
+  .hero-meta strong {
+    display: block;
+    color: var(--ey-text);
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .hero-shot {
+    background: var(--ey-panel);
+    border: 1px solid var(--ey-border);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 28px 80px rgba(0, 0, 0, .5);
+    transition: transform .25s ease, border-color .25s ease;
+  }
+
+  .hero-shot:hover {
+    transform: translateY(-4px);
+    border-color: var(--ey-yellow);
+  }
+
+  .hero-shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .hero-shot figcaption {
+    color: var(--ey-yellow);
+    border-top: 1px solid var(--ey-border);
+    padding: 14px 18px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .grid-3,
+  .grid-2 {
+    display: grid;
+    gap: 24px;
+  }
+
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+  .grid-2 { grid-template-columns: repeat(2, 1fr); }
+
+  .info-card,
+  .feature-card,
+  .scenario-card,
+  .value-card,
+  .tech-card {
+    background: var(--ey-panel);
+    border: 1px solid var(--ey-border);
+    border-radius: 6px;
+    padding: 30px 28px;
+    transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease;
+  }
+
+  .info-card {
+    border-top: 3px solid var(--ey-yellow);
+  }
+
+  .feature-card {
+    background: linear-gradient(135deg, var(--ey-panel), var(--ey-panel-2));
+    border-left: 4px solid var(--ey-yellow);
+  }
+
+  .scenario-card.internal { border-top: 3px solid var(--ey-info); }
+  .scenario-card.external { border-top: 3px solid var(--ey-success); }
+
+  .value-card,
+  .tech-card {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .value-card::before,
+  .tech-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--ey-yellow), transparent);
+  }
+
+  .info-card:hover,
+  .feature-card:hover,
+  .scenario-card:hover,
+  .value-card:hover,
+  .tech-card:hover {
+    transform: translateY(-4px);
+    border-color: var(--ey-yellow);
+    box-shadow: 0 0 24px rgba(255, 230, 0, .12);
+  }
+
+  .feature-card:hover {
+    transform: translateX(4px);
+  }
+
+  .card-num {
+    color: var(--ey-yellow);
+    font-family: Consolas, monospace;
+    font-size: 34px;
+    font-weight: 800;
+    margin-bottom: 14px;
+  }
+
+  .card-title {
+    color: var(--ey-text);
+    font-size: 19px;
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+
+  .card-desc {
+    color: var(--ey-text-sub);
+    font-size: 14px;
+    line-height: 1.85;
+  }
+
+  .feature-icon {
+    display: inline-grid;
+    place-items: center;
+    width: 54px;
+    height: 54px;
+    color: var(--ey-yellow);
+    background: rgba(255, 230, 0, .1);
+    border: 1px solid var(--ey-yellow);
+    border-radius: 10px;
+    font-size: 22px;
+    font-weight: 800;
+    margin-bottom: 14px;
+  }
+
+  .feature-tag {
+    display: inline-block;
+    background: rgba(255, 230, 0, .12);
+    color: var(--ey-yellow);
+    font-size: 11px;
+    padding: 4px 12px;
+    border-radius: 12px;
+    margin-top: 16px;
+    margin-right: 6px;
+    font-weight: 600;
+  }
+
+  .philosophy {
+    background:
+      radial-gradient(ellipse at center, rgba(255, 230, 0, .06), transparent 70%),
+      var(--ey-panel);
+    border-top: 1px solid var(--ey-border);
+    border-bottom: 1px solid var(--ey-border);
+    padding: 78px 8%;
+    text-align: center;
+  }
+
+  .philosophy-quote {
+    max-width: 1000px;
+    margin: 0 auto 24px;
+    color: var(--ey-text);
+    font-size: 31px;
+    font-weight: 300;
+    line-height: 1.55;
+  }
+
+  .philosophy-quote .hl {
+    color: var(--ey-yellow);
+    font-weight: 600;
+  }
+
+  .philosophy-attr {
+    color: var(--ey-text-mute);
+    font-size: 13px;
+    text-transform: uppercase;
+  }
+
+  .split-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 18px;
+  }
+
+  .badge {
+    background: var(--ey-yellow);
+    color: var(--ey-black);
+    border-radius: 4px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .split-name {
+    color: var(--ey-text);
+    font-size: 22px;
+    font-weight: 700;
+  }
+
+  .bullet-list {
+    list-style: none;
+    display: grid;
+    gap: 13px;
+  }
+
+  .bullet-list li {
+    color: var(--ey-text-sub);
+    font-size: 14px;
+    line-height: 1.75;
+    padding-left: 22px;
+    position: relative;
+  }
+
+  .bullet-list li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 10px;
+    width: 7px;
+    height: 7px;
+    background: var(--ey-yellow);
+    transform: rotate(45deg);
+  }
+
+  .architecture {
+    background: var(--ey-panel);
+    border: 1px solid var(--ey-border);
+    border-radius: 8px;
+    padding: 44px 32px;
+    margin-bottom: 48px;
+  }
+
+  .arch-flow {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0;
+  }
+
+  .arch-step {
+    background: var(--ey-panel-2);
+    border: 1px solid var(--ey-border);
+    border-radius: 6px;
+    padding: 24px 18px;
+    position: relative;
+    min-height: 168px;
+    transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease;
+  }
+
+  .arch-step:hover {
+    transform: translateY(-2px);
+    border-color: var(--ey-yellow);
+    box-shadow: 0 0 24px rgba(255, 230, 0, .14);
+  }
+
+  .arch-step:not(:last-child)::after {
+    content: "▶";
+    position: absolute;
+    top: 50%;
+    right: -17px;
+    transform: translateY(-50%);
+    z-index: 2;
+    color: var(--ey-yellow);
+    background: var(--ey-panel);
+    border-radius: 50%;
+    padding: 4px;
+    font-size: 13px;
+  }
+
+  .arch-num {
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+    line-height: 32px;
+    text-align: center;
+    background: var(--ey-yellow);
+    color: var(--ey-black);
+    border-radius: 50%;
+    font-family: Consolas, monospace;
+    font-weight: 800;
+    margin-bottom: 14px;
+  }
+
+  .arch-title {
+    font-size: 15px;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+
+  .arch-desc {
+    color: var(--ey-text-sub);
+    font-size: 12px;
+    line-height: 1.7;
+  }
+
+  .deploy-strip {
+    margin-top: 32px;
+    background: linear-gradient(135deg, rgba(255, 230, 0, .06), rgba(255, 230, 0, .02));
+    border: 1px solid var(--ey-yellow);
+    border-left: 4px solid var(--ey-yellow);
+    border-radius: 6px;
+    padding: 24px 30px;
+  }
+
+  .deploy-label {
+    color: var(--ey-yellow);
+    font-size: 13px;
+    font-weight: 800;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .deploy-title {
+    color: var(--ey-text);
+    font-size: 21px;
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+
+  .deploy-desc {
+    color: var(--ey-text-sub);
+    font-size: 14px;
+  }
+
+  .metrics-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 18px;
+    margin-top: 38px;
+  }
+
+  .metric-card {
+    background: var(--ey-panel);
+    border: 1px solid var(--ey-border);
+    border-radius: 6px;
+    padding: 26px 20px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .metric-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 3px;
+    background: linear-gradient(90deg, var(--ey-yellow), transparent);
+  }
+
+  .metric-num {
+    color: var(--ey-yellow);
+    font-family: Consolas, monospace;
+    font-size: 34px;
+    font-weight: 800;
+    margin-bottom: 8px;
+  }
+
+  .metric-desc {
+    color: var(--ey-text-sub);
+    font-size: 12px;
+  }
+
+  .screens-head {
+    margin: 56px 0 26px;
+  }
+
+  .screens-title {
+    color: var(--ey-text);
+    font-size: 25px;
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+
+  .screens-desc {
+    max-width: 820px;
+    color: var(--ey-text-sub);
+    font-size: 15px;
+  }
+
+  .shot-gallery {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 28px;
+  }
+
+  .shot {
+    cursor: zoom-in;
+    position: relative;
+    overflow: hidden;
+    background: var(--ey-panel);
+    border: 1px solid var(--ey-border);
+    border-radius: 8px;
+    transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease;
+  }
+
+  .shot:hover {
+    transform: translateY(-3px);
+    border-color: var(--ey-yellow);
+    box-shadow: 0 0 24px rgba(255, 230, 0, .12);
+  }
+
+  .shot::after {
+    content: "点击放大";
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    opacity: 0;
+    z-index: 4;
+    color: var(--ey-yellow);
+    background: rgba(0, 0, 0, .75);
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-size: 12px;
+    transition: opacity .25s ease;
+    pointer-events: none;
+  }
+
+  .shot:hover::after { opacity: 1; }
+
+  .shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-bottom: 1px solid var(--ey-border);
+    transition: transform .4s ease;
+  }
+
+  .shot:hover img { transform: scale(1.012); }
+
+  .shot-cap {
+    color: var(--ey-yellow);
+    padding: 14px 20px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    background: rgba(0, 0, 0, .92);
+    animation: lb-fade-in .25s ease;
+  }
+
+  .lightbox.open { display: flex; }
+
+  @keyframes lb-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .lightbox-img-wrap {
+    position: relative;
+    max-width: 95vw;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    animation: lb-zoom-in .3s ease;
+  }
+
+  @keyframes lb-zoom-in {
+    from { transform: scale(.92); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+
+  .lightbox img {
+    max-width: 95vw;
+    max-height: 85vh;
+    width: auto;
+    height: auto;
+    display: block;
+    border: 1px solid var(--ey-yellow);
+    border-radius: 4px;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, .6);
+  }
+
+  .lightbox-cap {
+    color: var(--ey-yellow);
+    font-size: 14px;
+    font-weight: 600;
+    margin-top: 16px;
+    text-align: center;
+  }
+
+  .lightbox-close {
+    position: fixed;
+    top: 24px;
+    right: 32px;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: rgba(255, 230, 0, .12);
+    border: 1px solid var(--ey-yellow);
+    color: var(--ey-yellow);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .2s ease, transform .2s ease, color .2s ease;
+  }
+
+  .lightbox-close:hover {
+    background: var(--ey-yellow);
+    color: var(--ey-black);
+    transform: rotate(90deg);
+  }
+
+  body.lb-open { overflow: hidden; }
+
+  footer {
+    background: var(--ey-dark);
+    border-top: 1px solid var(--ey-border);
+    padding: 42px 8%;
+    text-align: center;
+    color: var(--ey-text-mute);
+    font-size: 13px;
+  }
+
+  footer .accent {
+    border-bottom: none;
+    padding: 0;
+  }
+
+  @media (max-width: 1100px) {
+    .hero {
+      grid-template-columns: 1fr;
+      padding-top: 120px;
+    }
+
+    .arch-flow {
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+
+    .arch-step:not(:last-child)::after { display: none; }
+  }
+
+  @media (max-width: 900px) {
+    nav { padding: 12px 18px; }
+    .nav-links { display: none; }
+    .hero-title { font-size: 46px; }
+    .hero-tagline { font-size: 18px; }
+    .section-title { font-size: 30px; }
+    .grid-3,
+    .grid-2,
+    .metrics-strip,
+    .shot-gallery {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+</head>
+<body>
+<nav>
+  <div class="nav-brand">安永数智助手</div>
+  <div class="nav-links">
+    <a href="#product">产品介绍</a>
+    <a href="#scenarios">适用场景</a>
+    <a href="#value">业务价值</a>
+    <a href="#architecture">技术架构</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div>
+    <div class="hero-eyebrow">EY intelligent DA Client</div>
+    <h1 class="hero-title">
+      安永<br>
+      <span class="hl">数智助手</span>
+    </h1>
+    <p class="hero-tagline">
+      面向财务审计与企业数据分析场景的桌面端 AI 数据分析助手。<br>
+      用自然语言提出问题，由 Dify 生成分析逻辑，在本地完成数据处理、代码校验与结果呈现。
+    </p>
+    <div class="hero-actions">
+      <a href="#product" class="hero-cta">开始介绍 →</a>
+      <a href="#architecture" class="hero-link">查看真实界面</a>
+    </div>
+    <div class="hero-meta">
+      <div><strong>Dify + 本地执行</strong>AI 生成代码，本地运行数据</div>
+      <div><strong>多文件联合分析</strong>支持跨表、跨文件、跨业务口径</div>
+      <div><strong>灵活部署</strong>内网可用，外部环境可迁移复制</div>
+    </div>
+  </div>
+
+  <figure class="hero-shot">
+    <img src="assets/screenshot-06-result-chart.png" alt="安永数智助手结果图表界面">
+    <figcaption>真实结果界面：图表、分析摘要与导出能力</figcaption>
+  </figure>
+</section>
+
+<section id="product">
+  <div class="section-eyebrow">01 · 产品介绍</div>
+  <h2 class="section-title">从数据导入到洞察输出的 <span class="accent">AI 分析闭环</span></h2>
+  <p class="section-subtitle">
+    安永数智助手（EY intelligent DA Client）将自然语言需求、Dify 工作流、Python 分析代码、本地数据执行和结果看板整合在一个桌面端产品中。它既服务财审数据核查，也支持业务与财务趋势、异常、变化的快速分析。
+  </p>
+
+  <div class="grid-3">
+    <div class="info-card">
+      <div class="card-num">01</div>
+      <div class="card-title">自然语言驱动</div>
+      <div class="card-desc">
+        用户用中文或英文描述分析目标，系统将问题、数据结构、字段样例和关系证据发送至 Dify，由工作流规划需求并生成 Python 分析代码。
+      </div>
+    </div>
+    <div class="info-card">
+      <div class="card-num">02</div>
+      <div class="card-title">数据本地化处理</div>
+      <div class="card-desc">
+        数据文件导入后在本机完成预处理、缓存、代码校验、样本预跑和完整执行。原始数据处理留在本地桌面端，降低反复传输与外流风险。
+      </div>
+    </div>
+    <div class="info-card">
+      <div class="card-num">03</div>
+      <div class="card-title">结果优先体验</div>
+      <div class="card-desc">
+        结果面板集中展示摘要、指标、表格、图表、洞察与告警；用户可在执行前审阅代码，也可在失败后触发修复流程，让分析透明可控。
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2" style="margin-top: 28px;">
+    <div class="feature-card">
+      <div class="feature-icon">DA</div>
+      <div class="card-title">数据分析</div>
+      <div class="card-desc">
+        支持经营分析、财务趋势分析、异常波动解释、同比环比、分组汇总、指标计算和图表生成，适合从数据维度分析业务与财务变化。
+      </div>
+      <span class="feature-tag">自然语言</span>
+      <span class="feature-tag">图表结果</span>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">MF</div>
+      <div class="card-title">多文件联合分析</div>
+      <div class="card-desc">
+        可同时选择多个数据集，按业务主键、期间、客户、科目等维度进行跨表关联、对比、补充和校验，支持更复杂的财审分析场景。
+      </div>
+      <span class="feature-tag">跨表 Join</span>
+      <span class="feature-tag">关系识别</span>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">CL</div>
+      <div class="card-title">数据清洗</div>
+      <div class="card-desc">
+        面向缺失值、重复值、空白行、空字段和格式不一致等问题，提供独立清洗入口和单目标数据集处理流程。
+      </div>
+      <span class="feature-tag">质量提升</span>
+      <span class="feature-tag">规则配置</span>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">EX</div>
+      <div class="card-title">可审阅、本地执行</div>
+      <div class="card-desc">
+        AI 生成的 Python 进入代码审阅与执行链路，客户端在本地子进程中运行代码并记录日志，兼顾效率、透明度和可控性。
+      </div>
+      <span class="feature-tag">代码透明</span>
+      <span class="feature-tag">本地运行</span>
+    </div>
+  </div>
+</section>
+
+<div class="philosophy">
+  <div class="philosophy-quote">
+    「让 <span class="hl">AI</span> 负责把业务问题转化为分析代码，把 <span class="hl">专业判断</span> 留给审计师与财务专家。」
+  </div>
+  <div class="philosophy-attr">Product Design Philosophy</div>
+</div>
+
+<section id="scenarios">
+  <div class="section-eyebrow">02 · 适用场景</div>
+  <h2 class="section-title">覆盖内部赋能与外部交付的 <span class="accent">双场景</span></h2>
+  <p class="section-subtitle">
+    同一套工具既可以服务内部财审与数据分析团队，也可以作为客户项目中的轻量化、可部署、可演示的数据分析解决方案。
+  </p>
+
+  <div class="grid-2">
+    <div class="scenario-card internal">
+      <div class="split-head">
+        <span class="badge">INTERNAL</span>
+        <div class="split-name">内部使用场景</div>
+      </div>
+      <ul class="bullet-list">
+        <li>支持财审团队进行底稿数据核查、异常筛选、波动解释、趋势对比和明细穿透，减少重复性 Excel 操作。</li>
+        <li>财审人员可自行导入财务数据，用自然语言提出分析问题，快速获得指标、表格、图表和初步洞察。</li>
+        <li>在项目支持中作为数据分析加速器，帮助团队更快完成字段理解、样本探索、跨文件核对和结果复核。</li>
+        <li>沉淀可复用的 AI + 数据分析工作流，为后续行业场景、审计程序和自动化工具扩展打基础。</li>
+      </ul>
+    </div>
+
+    <div class="scenario-card external">
+      <div class="split-head">
+        <span class="badge">EXTERNAL</span>
+        <div class="split-name">外部客户场景</div>
+      </div>
+      <ul class="bullet-list">
+        <li>面向客户财务、运营、内控、合规等数据，提供灵活部署的数据分析助手，适配客户网络与安全要求。</li>
+        <li>强调数据本地化处理：客户原始数据可保留在本地环境，AI 侧主要接收字段结构、样例和分析上下文。</li>
+        <li>业务人员无需 IT 背景即可提出需求，例如按产品、区域、客户、期间分析收入趋势、成本变化、异常波动。</li>
+        <li>在 PoC、专项分析、管理层汇报和审计科技展示中快速响应客户需求，形成可看、可试、可扩展的解决方案。</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="value">
+  <div class="section-eyebrow">03 · 业务价值</div>
+  <h2 class="section-title">以 AI 赋能打开 <span class="accent">专业服务新边界</span></h2>
+  <p class="section-subtitle">
+    安永数智助手的价值不仅在于替代部分手工分析，更在于把专业判断、数据能力和 AI 工具化能力结合起来，形成可复用、可展示、可拓展的数字化服务资产。
+  </p>
+
+  <div class="grid-2">
+    <div class="value-card">
+      <div class="split-head">
+        <span class="badge">INTERNAL</span>
+        <div class="split-name">内部价值</div>
+      </div>
+      <ul class="bullet-list">
+        <li>提高财审和数据支持团队的分析效率，减少重复的数据整理、透视、筛选和脚本编写工作。</li>
+        <li>响应公司 AI 赋能战略，将 AI 能力嵌入实际项目流程，而不是停留在概念展示。</li>
+        <li>扩展团队技术边界，让审计、财务和数据分析经验沉淀为可复用的工作流与产品能力。</li>
+        <li>提升跨项目复用能力，通过标准化数据导入、分析合同和结果展示，形成统一的交付体验。</li>
+      </ul>
+    </div>
+
+    <div class="value-card">
+      <div class="split-head">
+        <span class="badge">EXTERNAL</span>
+        <div class="split-name">对外价值</div>
+      </div>
+      <ul class="bullet-list">
+        <li>为客户提供轻量、灵活、可部署的数据分析解决方案，降低从需求提出到结果产出的时间成本。</li>
+        <li>展现安永在财务专业、数据分析和 AI 工程化方面的综合能力，增强客户对专业深度的感知。</li>
+        <li>围绕客户业务数据发现趋势、异常、变化和管理洞察，为后续专项服务、系统建设和数据治理创造机会。</li>
+        <li>在售前演示、PoC 和项目交付中形成差异化亮点，帮助团队获得更多数字化与智能化相关商机。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="metrics-strip">
+    <div class="metric-card">
+      <div class="metric-num">AI</div>
+      <div class="metric-desc">自然语言转分析逻辑</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num">Local</div>
+      <div class="metric-desc">数据本地化处理</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num">Multi</div>
+      <div class="metric-desc">多文件联合分析</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num">Deploy</div>
+      <div class="metric-desc">灵活复制部署</div>
+    </div>
+  </div>
+</section>
+
+<section id="architecture">
+  <div class="section-eyebrow">04 · 技术架构</div>
+  <h2 class="section-title">Dify 生成逻辑，本地完成 <span class="accent">可信执行</span></h2>
+  <p class="section-subtitle">
+    当前版本采用 PySide6 构建 Windows 桌面应用，结合 Pandas、DuckDB、PyArrow、Matplotlib 等数据处理能力。Dify 负责理解需求和生成代码，客户端负责数据画像、代码合同校验、本地执行、错误修复与结果渲染。
+  </p>
+
+  <div class="architecture">
+    <div class="arch-flow">
+      <div class="arch-step">
+        <span class="arch-num">1</span>
+        <div class="arch-title">数据导入</div>
+        <div class="arch-desc">支持 Excel 多文件导入，生成字段画像、样例值、数据集身份与本地缓存。</div>
+      </div>
+      <div class="arch-step">
+        <span class="arch-num">2</span>
+        <div class="arch-title">需求理解</div>
+        <div class="arch-desc">将用户问题与压缩后的数据上下文发送至 Dify，形成分析计划与澄清选项。</div>
+      </div>
+      <div class="arch-step">
+        <span class="arch-num">3</span>
+        <div class="arch-title">代码生成</div>
+        <div class="arch-desc">Dify 输出 Python 代码，遵循本地数据 API 与结果收集协议。</div>
+      </div>
+      <div class="arch-step">
+        <span class="arch-num">4</span>
+        <div class="arch-title">本地校验执行</div>
+        <div class="arch-desc">客户端进行合同校验、样本预跑、子进程执行和异常修复。</div>
+      </div>
+      <div class="arch-step">
+        <span class="arch-num">5</span>
+        <div class="arch-title">结果呈现</div>
+        <div class="arch-desc">输出摘要、指标、表格、图表、洞察、告警和执行细节，支持进一步分析。</div>
+      </div>
+    </div>
+
+    <div class="deploy-strip">
+      <div class="deploy-label">Deploy</div>
+      <div class="deploy-title">灵活部署：从公司内网 Dify 到外部网络环境</div>
+      <div class="deploy-desc">
+        当前可接入公司内网 Dify Workflow；在客户项目或外部网络场景中，可复制同样的客户端 + Dify 工作流架构，替换 API 地址、密钥与模型服务，即可形成独立环境下的分析助手。原始数据处理仍可保留在本地桌面端，兼顾交付速度、数据边界和部署弹性。
+      </div>
+    </div>
+  </div>
+
+  <div class="screens-head">
+    <div class="screens-title">真实界面流程</div>
+    <div class="screens-desc">
+      以下 8 张截图展示安永数智助手从初始导入、数据集管理、Overview、分析执行、结果输出到数据清洗的完整产品路径。
+    </div>
+  </div>
+
+  <div class="shot-gallery">
+    <figure class="shot" tabindex="0" role="button">
+      <img src="assets/screenshot-01-initial.png" alt="初始界面">
+      <figcaption class="shot-cap">01 · 初始界面：从数据工作区开始导入 Excel 数据集</figcaption>
+    </figure>
+    <figure class="shot" tabindex="0" role="button">
+      <img src="assets/screenshot-02-dataset-ready.png" alt="初始界面添加一个数据集">
+      <figcaption class="shot-cap">02 · 数据集就绪：导入后解锁 Data Analyze 与 Data Clean</figcaption>
+    </figure>
+    <figure class="shot" tabindex="0" role="button">
+      <img src="assets/screenshot-03-data-library.png" alt="打开 Data Library">
+      <figcaption class="shot-cap">03 · Data Library：统一管理数据集与分析范围</figcaption>
+    </figure>
+    <figure class="shot" tabindex="0" role="button">
+      <img src="assets/screenshot-04-overview.png" alt="Dataset Overview">
+      <figcaption class="shot-cap">04 · Overview：自动生成数据集摘要、行列信息与建议问题</figcaption>
+    </figure>
+    <figure class="shot" tabindex="0" role="button">
+      <img src="assets/screenshot-05-analysis-running.png" alt="Analyse 执行中">
+      <figcaption class="shot-cap">05 · Analyse 执行中：Dify 生成分析代码，本地准备执行</figcaption>
+    </figure>
+    <figure class="shot" tabindex="0" role="button">
+      <img src="assets/screenshot-06-result-chart.png" alt="结果图表">
+      <figcaption class="shot-cap">06 · 结果图表：可视化呈现财务与业务指标对比</figcaption>
+    </figure>
+    <figure class="shot" tabindex="0" role="button">
+      <img src="assets/screenshot-07-result-answer.png" alt="结果 Answer">
+      <figcaption class="shot-cap">07 · Answer：结构化输出分析结论、表格引用与提示信息</figcaption>
+    </figure>
+    <figure class="shot" tabindex="0" role="button">
+      <img src="assets/screenshot-08-data-cleaning.png" alt="数据清洗界面">
+      <figcaption class="shot-cap">08 · Data Cleaning：扫描缺失值并配置清洗规则</figcaption>
+    </figure>
+  </div>
+</section>
+
+<footer>
+  <div class="nav-brand" style="margin-bottom: 12px;">安永数智助手</div>
+  <div>EY intelligent DA Client · Desktop AI Data Analysis Assistant</div>
+  <div style="margin-top: 8px;">
+    Powered by <span class="accent">PySide6 + Dify Workflow + Local Python Runtime</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var lb = document.createElement('div');
+  lb.className = 'lightbox';
+  lb.innerHTML =
+    '<button class="lightbox-close" aria-label="关闭">×</button>' +
+    '<div class="lightbox-img-wrap">' +
+      '<img alt="">' +
+      '<div class="lightbox-cap"></div>' +
+    '</div>';
+  document.body.appendChild(lb);
+
+  var lbImg = lb.querySelector('img');
+  var lbCap = lb.querySelector('.lightbox-cap');
+  var lbClose = lb.querySelector('.lightbox-close');
+
+  function openLB(src, cap) {
+    lbImg.src = src;
+    lbImg.alt = cap;
+    lbCap.textContent = cap;
+    lb.classList.add('open');
+    document.body.classList.add('lb-open');
+  }
+
+  function closeLB() {
+    lb.classList.remove('open');
+    document.body.classList.remove('lb-open');
+  }
+
+  lbClose.addEventListener('click', closeLB);
+  lb.addEventListener('click', function(e){
+    if (e.target === lb) closeLB();
+  });
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'Escape' && lb.classList.contains('open')) closeLB();
+  });
+
+  document.querySelectorAll('.shot').forEach(function(shot){
+    var img = shot.querySelector('img');
+    var cap = shot.querySelector('.shot-cap');
+    var captionText = cap ? cap.textContent : (img ? img.alt : '');
+
+    shot.setAttribute('aria-label', '点击放大图片：' + captionText);
+
+    shot.addEventListener('click', function(e){
+      e.preventDefault();
+      openLB(img.src, captionText);
+    });
+    shot.addEventListener('keydown', function(e){
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openLB(img.src, captionText);
+      }
+    });
+  });
+})();
+</script>
+</body>
+</html>

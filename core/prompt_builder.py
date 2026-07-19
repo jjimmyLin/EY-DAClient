@@ -25,6 +25,14 @@ _RUNTIME_CONTRACT = {
             "joined = data.sql('SELECT ... FROM a JOIN b ...', "
             "sources={'a': ('ds_a','sh_a'), 'b': ('ds_b','sh_b')})"
         ),
+        "sql_sheet_group": (
+            "summary = data.sql('SELECT account, SUM(amount) AS total FROM je "
+            "GROUP BY account', sheet_groups={'je': ('dataset_id','sheet_group_id')})"
+        ),
+        "union_sheets": (
+            'je = data.union_sheets("dataset_id", group_id="sheet_group_id", '
+            "columns=[...])"
+        ),
     },
     "rules": [
         "Use dataset_id and sheet_id, not display names.",
@@ -32,12 +40,25 @@ _RUNTIME_CONTRACT = {
         "Numbered or bulleted user requests must become separate requirements.",
         "Do not merge separate user questions into one requirement unless the "
         "user explicitly asks for a combined answer.",
-        "Cross-dataset alignment must use data.merge() or data.sql().",
+        "Cross-source alignment must use data.merge(), data.sql(), or "
+        "data.union_sheets() so the operation is explicit and auditable.",
+        "When a dataset contains sheet_groups with type same_schema_append, "
+        "use data.sql(..., sheet_groups=...) for large aggregations or "
+        "data.union_sheets(...) for projected in-memory analysis. Do not analyze "
+        "only the first sheet when the user asks about the whole workbook/table.",
+        "Use joins only for different entities that must be matched by a "
+        "business key. Use combines with type union_all for same-schema row "
+        "partitions such as journal-entry exports split across sheets.",
+        "Use sheet semantic_roles when available. For audit/finance requests, "
+        "prefer columns tagged as date, period, account, amount, debit, credit, "
+        "document, vendor, customer, company, cost_center, profit_center, "
+        "currency, description, or user.",
         "Never add/subtract/divide Series from different datasets by row index.",
         "Load only needed columns when practical.",
         "For large datasets, data.get(...) must always include columns=[...].",
-        "For large joins/aggregations prefer data.sql(..., sources=...) so "
-        "DuckDB reads Parquet directly without loading full sheets into Pandas.",
+        "For large joins/aggregations prefer data.sql(..., sources=...) or "
+        "data.sql(..., sheet_groups=...) so DuckDB reads Parquet directly "
+        "without loading full sheets into Pandas.",
         "Do not use dfs[...] for large datasets.",
         "Keep SQL outputs bounded and aggregate before wide joins when possible.",
         "Define ANALYSIS_SPEC with requirements and datasets.",
@@ -102,7 +123,7 @@ class PromptBuilder:
                 "runtime_or_semantic_error": error_message[-8000:],
                 "repair_rules": [
                     "Return a complete replacement script.",
-                    "Preserve every requirement and explicit join rule.",
+                    "Preserve every requirement and explicit join/combine rule.",
                     "Fix the actual runtime or semantic validation error.",
                     "Keep ANALYSIS_SPEC, result.add_answer calls, and "
                     "result.mark_requirement calls.",
@@ -111,6 +132,40 @@ class PromptBuilder:
         )
         return {
             "task_type": "repair",
+            "context": PromptBuilder._encode_context(payload),
+            "query": user_query.strip(),
+        }
+
+    @staticmethod
+    def build_generation_repair_prompt(
+        files_meta: list[FileMeta],
+        user_query: str,
+        failed_code: str,
+        failed_plan: dict | None,
+        validation_error: str,
+        attempt: int = 1,
+    ) -> dict[str, str]:
+        payload = PromptBuilder._context_payload(files_meta)
+        payload.update(
+            {
+                "generation_repair_attempt": attempt,
+                "failed_analysis_plan": failed_plan or {},
+                "failed_code": failed_code,
+                "generation_validation_error": validation_error[-8000:],
+                "repair_rules": [
+                    "Return a corrected analysis_plan and complete executable code.",
+                    "Fix every validation issue before changing style or formatting.",
+                    "Preserve the original user request and cover every explicit item.",
+                    "Use only supplied dataset_id, sheet_id, sheet_group_id, columns, "
+                    "candidate relationships, and semantic_roles.",
+                    "If the previous plan missed a numbered/bulleted user item, "
+                    "add a separate requirement for that item.",
+                    "If a requirement uses multiple sources, provide joins or combines.",
+                ],
+            }
+        )
+        return {
+            "task_type": "analysis",
             "context": PromptBuilder._encode_context(payload),
             "query": user_query.strip(),
         }
@@ -152,6 +207,7 @@ class PromptBuilder:
                     "objective",
                     "sources",
                     "joins",
+                    "combines",
                     "grain",
                     "formula",
                     "output_type",
@@ -168,6 +224,14 @@ class PromptBuilder:
                     "expected_relationship",
                     "many_to_many_confirmed",
                 ],
+                "combine_fields": [
+                    "type",
+                    "dataset_id",
+                    "group_id",
+                    "sheet_ids",
+                    "columns",
+                    "reason",
+                ],
                 "multi_requirement_rules": [
                     "Each numbered/bulleted user question should map to exactly "
                     "one requirement unless it is only explanatory context.",
@@ -175,6 +239,11 @@ class PromptBuilder:
                     "as R1, R2, R3, in the same order as the user request.",
                     "Generated Python must create one result.add_answer(...) "
                     "for every non-clarification requirement.",
+                    "If multiple sources are row partitions of the same logical "
+                    "table, use combines=[{type:'union_all', ...}] instead of joins.",
+                    "The plan must cover every explicit numbered/bulleted user "
+                    "request item and every user-mentioned column that exists in "
+                    "the supplied schemas.",
                 ],
             },
         }
@@ -262,15 +331,17 @@ class PromptBuilder:
             return (
                 "You repair Python data-analysis scripts. Return a complete "
                 "replacement script only. Preserve the analysis plan, use the "
-                "local data API, ANALYSIS_SPEC, result.mark_requirement(), and "
+                "local data API including data.union_sheets() for same-schema "
+                "sheet groups, ANALYSIS_SPEC, result.mark_requirement(), and "
                 "structured result methods. Preserve result.add_answer() for "
                 "each requirement. Never access external files."
             )
         return (
             "You generate executable Python for local data analysis. Use the "
             "dataset IDs, sheet IDs, local data API, and structured result API "
-            "described in context. For cross-dataset work use data.merge() or "
-            "data.sql(). First decompose the user query into ordered atomic "
+            "described in context. For cross-source work use data.merge(), "
+            "data.sql(), or data.union_sheets() for same-schema sheet groups. "
+            "First decompose the user query into ordered atomic "
             "requirements. Define ANALYSIS_SPEC with one requirement per user "
             "question, mark every completed requirement, and add one "
             "result.add_answer() per requirement before marking it complete. "

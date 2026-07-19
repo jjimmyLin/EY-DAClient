@@ -127,86 +127,143 @@ class AnalysisWorkflow:
     ) -> WorkflowResult:
         code = ""
         plan: dict[str, Any] = {}
-        try:
-            self._emit(event_callback, "status", "Preparing analysis request")
-            prompt = self._prompt_builder.build_analysis_prompt(
-                files_meta,
-                user_query,
-            )
-            if hasattr(self._client, "generate_analysis"):
-                generated = self._client.generate_analysis(
-                    prompt,
-                    event_callback=event_callback,
+        prompt = self._prompt_builder.build_analysis_prompt(
+            files_meta,
+            user_query,
+        )
+        last_contract_error = ""
+        for attempt in range(self._max_retries + 1):
+            try:
+                self._emit(
+                    event_callback,
+                    "status",
+                    (
+                        "Preparing analysis request"
+                        if attempt == 0
+                        else f"Repairing analysis plan ({attempt}/{self._max_retries})"
+                    ),
                 )
-                plan = generated.get("plan") or {}
-                if generated.get("clarification_required"):
-                    return WorkflowResult(
-                        success=False,
-                        code="",
-                        execution=None,
-                        analysis_plan=plan,
-                        needs_clarification=True,
-                        clarification_question=str(
-                            generated.get("clarification_question") or ""
-                        ),
-                        clarification_options=[
-                            item
-                            for item in generated.get(
-                                "clarification_options",
-                                [],
-                            )
-                            if isinstance(item, dict)
-                        ],
+                if hasattr(self._client, "generate_analysis"):
+                    generated = self._client.generate_analysis(
+                        prompt,
+                        event_callback=event_callback,
                     )
-                code = str(generated.get("code") or "")
-            else:
-                code = self._client.generate_code(
-                    prompt,
-                    event_callback=event_callback,
-                )
+                    plan = generated.get("plan") or {}
+                    if generated.get("clarification_required"):
+                        plan = {
+                            **plan,
+                            "clarification_required": True,
+                            "clarification_question": str(
+                                generated.get("clarification_question")
+                                or plan.get("clarification_question")
+                                or ""
+                            ),
+                            "clarification_options": (
+                                generated.get("clarification_options")
+                                or plan.get("clarification_options")
+                                or []
+                            ),
+                        }
+                        self._plan_validator.validate(
+                            plan,
+                            files_meta,
+                            user_query=user_query,
+                        ).raise_if_invalid()
+                        return WorkflowResult(
+                            success=False,
+                            code="",
+                            execution=None,
+                            analysis_plan=plan,
+                            needs_clarification=True,
+                            clarification_question=str(
+                                generated.get("clarification_question") or ""
+                            ),
+                            clarification_options=[
+                                item
+                                for item in generated.get(
+                                    "clarification_options",
+                                    [],
+                                )
+                                if isinstance(item, dict)
+                            ],
+                        )
+                    code = str(generated.get("code") or "")
+                else:
+                    code = self._client.generate_code(
+                        prompt,
+                        event_callback=event_callback,
+                    )
 
-            self._emit(event_callback, "status", "Validating generated code")
-            safety = self._validator.validate(code)
-            safety.raise_if_unsafe()
-            self._emit(event_callback, "status", "Validating analysis plan")
-            self._plan_validator.validate(plan, files_meta).raise_if_invalid()
-            self._code_contract.validate(
-                code,
-                files_meta,
-                plan,
-            ).raise_if_invalid()
-            self._emit(event_callback, "status", "Code is ready for preflight")
-            return WorkflowResult(
-                True,
-                code,
-                None,
-                analysis_plan=plan,
-                validation_result={"is_safe": True, "violations": []},
-            )
-        except AnalysisContractError as exc:
-            return WorkflowResult(
-                False,
-                code,
-                None,
-                error=f"Analysis contract validation failed: {exc}",
-                analysis_plan=plan,
-            )
-        except SecurityError as exc:
-            return WorkflowResult(
-                False,
-                code,
-                None,
-                error=f"Security validation failed: {exc}",
-                analysis_plan=plan,
-            )
-        except LLMError as exc:
-            return WorkflowResult(
-                False,
-                "",
-                None,
-                error=f"LLM API error: {exc}",
-                analysis_plan=plan,
-            )
+                self._emit(event_callback, "status", "Validating generated code")
+                safety = self._validator.validate(code)
+                safety.raise_if_unsafe()
+                self._emit(event_callback, "status", "Validating analysis plan")
+                self._plan_validator.validate(
+                    plan,
+                    files_meta,
+                    user_query=user_query,
+                ).raise_if_invalid()
+                self._code_contract.validate(
+                    code,
+                    files_meta,
+                    plan,
+                ).raise_if_invalid()
+                self._emit(event_callback, "status", "Code is ready for preflight")
+                return WorkflowResult(
+                    True,
+                    code,
+                    None,
+                    retries_used=attempt,
+                    analysis_plan=plan,
+                    validation_result={"is_safe": True, "violations": []},
+                )
+            except AnalysisContractError as exc:
+                last_contract_error = str(exc)
+                if attempt >= self._max_retries:
+                    return WorkflowResult(
+                        False,
+                        code,
+                        None,
+                        error=(
+                            "Analysis contract validation failed after "
+                            f"{self._max_retries} repair attempt(s): {exc}"
+                        ),
+                        retries_used=attempt,
+                        analysis_plan=plan,
+                    )
+                prompt = self._prompt_builder.build_generation_repair_prompt(
+                    files_meta,
+                    user_query,
+                    code,
+                    plan,
+                    last_contract_error,
+                    attempt + 1,
+                )
+            except SecurityError as exc:
+                return WorkflowResult(
+                    False,
+                    code,
+                    None,
+                    error=f"Security validation failed: {exc}",
+                    retries_used=attempt,
+                    analysis_plan=plan,
+                )
+            except LLMError as exc:
+                return WorkflowResult(
+                    False,
+                    "",
+                    None,
+                    error=f"LLM API error: {exc}",
+                    retries_used=attempt,
+                    analysis_plan=plan,
+                )
+        return WorkflowResult(
+            False,
+            code,
+            None,
+            error=f"Analysis contract validation failed: {last_contract_error}",
+            analysis_plan=plan,
+        )
 
     def execute_only(
         self,
@@ -215,6 +272,7 @@ class AnalysisWorkflow:
         event_callback: EventCallback | None = None,
         *,
         analysis_plan: dict[str, Any] | None = None,
+        user_query: str = "",
         sample: bool = False,
     ) -> WorkflowResult:
         phase = "sample preflight" if sample else "full local analysis"
@@ -225,6 +283,7 @@ class AnalysisWorkflow:
             self._plan_validator.validate(
                 analysis_plan,
                 files_meta,
+                user_query=user_query,
             ).raise_if_invalid()
             self._code_contract.validate(
                 code,
@@ -282,6 +341,7 @@ class AnalysisWorkflow:
                 files_meta,
                 event_callback=event_callback,
                 analysis_plan=analysis_plan,
+                user_query=user_query,
                 sample=sample,
             )
             last_result.retries_used = attempt

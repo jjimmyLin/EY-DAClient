@@ -133,3 +133,81 @@ def test_large_dataset_requires_projected_columns_for_get(tmp_path, monkeypatch)
         sources={"fact": ("ds_large", "sh_main")},
     )
     assert len(result) == 2
+
+
+def test_large_union_sheets_requires_projected_columns(tmp_path, monkeypatch):
+    parquet_path = tmp_path / "sheet.parquet"
+    pd.DataFrame(
+        {
+            "id": [1, 2, 3],
+            "amount": [10, 20, 30],
+            "region": ["APAC", "EMEA", "AMER"],
+        }
+    ).to_parquet(parquet_path, index=False)
+
+    duckdb_temp = tmp_path / "duckdb-temp"
+    duckdb_temp.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(settings, "DUCKDB_TEMP_DIR", duckdb_temp)
+    monkeypatch.setattr(settings, "BACKGROUND_ANALYSIS_ROWS", 2)
+    monkeypatch.setattr(settings, "LARGE_DATASET_COLUMN_GUARD", 2)
+
+    catalog = LocalDataCatalog(
+        [
+            {
+                "dataset_id": "ds_large",
+                "aliases": [],
+                "sheet_groups": [
+                    {
+                        "group_id": "sg_je",
+                        "type": "same_schema_append",
+                        "sheet_ids": ["sh_1", "sh_2"],
+                        "sheet_names": ["JE_1", "JE_2"],
+                        "columns": ["id", "amount", "region"],
+                    }
+                ],
+                "sheets": [
+                    {
+                        "sheet_id": "sh_1",
+                        "name": "JE_1",
+                        "cache_path": str(parquet_path),
+                        "sample_cache_path": str(parquet_path),
+                        "rows": 999999,
+                        "columns": ["id", "amount", "region"],
+                    },
+                    {
+                        "sheet_id": "sh_2",
+                        "name": "JE_2",
+                        "cache_path": str(parquet_path),
+                        "sample_cache_path": str(parquet_path),
+                        "rows": 999999,
+                        "columns": ["id", "amount", "region"],
+                    },
+                ],
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Use data.get"):
+        catalog.union_sheets("ds_large", group_id="sg_je")
+
+    projected = catalog.union_sheets(
+        "ds_large",
+        group_id="sg_je",
+        columns=["id", "amount"],
+    )
+    assert list(projected.columns) == [
+        "id",
+        "amount",
+        "source_sheet",
+        "source_sheet_id",
+    ]
+    assert len(projected) == 6
+    assert catalog.audit_records[-1]["kind"] == "union"
+
+    summary = catalog.sql(
+        "SELECT COUNT(*) AS rows, SUM(amount) AS total_amount FROM je",
+        sheet_groups={"je": ("ds_large", "sg_je")},
+    )
+    assert summary.loc[0, "rows"] == 6
+    assert summary.loc[0, "total_amount"] == 120
+    assert catalog.audit_records[-1]["kind"] == "sql"

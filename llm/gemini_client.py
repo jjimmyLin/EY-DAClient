@@ -175,7 +175,12 @@ class GeminiClient:
             "evidence. Required top-level keys: task_summary, requirements, "
             "warnings, clarification_required, clarification_question, "
             "clarification_options. Each requirement needs id, objective, "
-            "sources, joins, grain, formula, output_type. Never guess an "
+            "sources, joins, combines, grain, formula, output_type. Use "
+            "combines with type union_all for same-schema sheet groups and "
+            "joins only for different entities matched by business keys. Use "
+            "semantic_roles when available for audit/finance columns such as "
+            "date, period, account, amount, debit, credit, document, vendor, "
+            "company, currency, description, and user. Never guess an "
             "ambiguous cross-dataset relationship; request clarification."
         )
         self._emit(event_callback, "status", "Generating DevOps analysis plan")

@@ -49,7 +49,7 @@ _BANNED_CALLS = {
     "to_xml", "to_clipboard",
     # pathlib and generic filesystem methods
     "read_text", "read_bytes", "write_text", "write_bytes",
-    "mkdir", "rename", "replace", "unlink", "rmdir", "touch",
+    "mkdir", "unlink", "rmdir", "touch",
     # numpy and matplotlib filesystem methods
     "load", "save", "savez", "savez_compressed", "loadtxt", "savetxt",
     "genfromtxt", "fromfile", "tofile", "memmap", "savefig",

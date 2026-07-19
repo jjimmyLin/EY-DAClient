@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 import dify.workflow as workflow_module
+from core.analysis_contract import AnalysisPlanValidator
 from core.executor import Executor
 from core.code_validator import CodeValidator
 from core.preprocessor import Preprocessor
@@ -27,6 +28,18 @@ class FakeClient:
             "code": self.generate_code(prompt, event_callback),
             "plan": self.plan,
         }
+
+
+class SequentialAnalysisClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.prompts = []
+
+    def generate_analysis(self, prompt: dict, event_callback=None) -> dict:
+        self.prompts.append(prompt)
+        if not self.responses:
+            raise AssertionError("SequentialAnalysisClient has no queued response")
+        return self.responses.pop(0)
 
 
 def _write_demo_workbook(path):
@@ -86,6 +99,37 @@ def test_preprocessor_adds_bounded_unique_value_evidence(tmp_path):
     assert "D" in unique_values["product"]
 
 
+def test_preprocessor_adds_financial_semantic_roles(tmp_path):
+    workbook = tmp_path / "je.xlsx"
+    frame = pd.DataFrame(
+        {
+            "Posting Date": pd.to_datetime(["2026-01-01"]),
+            "Period": ["2026-01"],
+            "Account Code": ["600101"],
+            "Debit Amount": [100.0],
+            "Credit Amount": [0.0],
+            "Document No": ["JE001"],
+            "Vendor Name": ["Supplier A"],
+            "Company Code": ["CN01"],
+            "Currency": ["CNY"],
+        }
+    )
+    frame.to_excel(workbook, index=False, sheet_name="JE")
+
+    file_meta = Preprocessor().process(str(workbook))
+    roles = file_meta.sheets[0].semantic_roles
+
+    assert roles["date"] == ["Posting Date"]
+    assert roles["period"] == ["Period"]
+    assert roles["account"] == ["Account Code"]
+    assert roles["debit"] == ["Debit Amount"]
+    assert roles["credit"] == ["Credit Amount"]
+    assert roles["document"] == ["Document No"]
+    assert roles["vendor"] == ["Vendor Name"]
+    assert roles["company"] == ["Company Code"]
+    assert roles["currency"] == ["Currency"]
+
+
 def test_analysis_prompt_uses_direct_code_generation_contract(tmp_path):
     query = "Calculate total revenue. " * 40
     prompt = PromptBuilder.build_analysis_prompt(
@@ -130,6 +174,72 @@ def test_workflow_generates_code_from_single_backend_call(tmp_path, monkeypatch)
     assert result.code == code
     assert fake.responses == []
     assert len(fake.prompts) == 1
+
+
+def test_workflow_repairs_invalid_analysis_plan_before_failing_generation(
+    tmp_path,
+    monkeypatch,
+):
+    files_meta = _files_meta(tmp_path)
+    dataset_id = files_meta[0].runtime_key
+    sheet_id = files_meta[0].sheets[0].sheet_id
+    code = f"""
+df = data.get("{dataset_id}", "{sheet_id}", columns=["price", "quantity"])
+total = (df["price"] * df["quantity"]).sum()
+result.add_metric("Total revenue", total)
+result.add_answer("R1", "Calculate total revenue", f"Total revenue is {{total}}.", supporting_metrics=["Total revenue"])
+result.mark_requirement("R1")
+"""
+    invalid_plan = {
+        "task_summary": "Broken",
+        "requirements": [],
+        "warnings": [],
+        "clarification_required": False,
+        "clarification_question": "",
+        "clarification_options": [],
+    }
+    valid_plan = _analysis_plan(files_meta)
+    valid_plan["requirements"][0]["objective"] = "Calculate total revenue"
+    fake = SequentialAnalysisClient(
+        [
+            {"code": code, "plan": invalid_plan},
+            {"code": code, "plan": valid_plan},
+        ]
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "get_client",
+        lambda cancellation_token=None: fake,
+    )
+
+    result = AnalysisWorkflow().generate_only(
+        files_meta,
+        "Calculate total revenue",
+    )
+
+    assert result.success
+    assert result.retries_used == 1
+    assert len(fake.prompts) == 2
+    assert fake.prompts[1]["task_type"] == "analysis"
+    assert "generation_validation_error" in fake.prompts[1]["context"]
+
+
+def test_intent_coverage_rejects_missing_explicit_user_item(tmp_path):
+    files_meta = _files_meta(tmp_path)
+    plan = _analysis_plan(files_meta, ["price"])
+    query = (
+        "1. Calculate total price\n"
+        "2. Summarize quantity by product"
+    )
+
+    validation = AnalysisPlanValidator().validate(
+        plan,
+        files_meta,
+        user_query=query,
+    )
+
+    assert not validation.is_valid
+    assert "intent coverage" in "\n".join(validation.issues)
 
 
 def test_workflow_blocks_unsafe_generated_code(tmp_path, monkeypatch):
@@ -301,6 +411,18 @@ def test_code_validator_blocks_file_io_and_unsafe_runtime_access():
     for code in unsafe_samples:
         validation = CodeValidator().validate(code)
         assert not validation.is_safe, code
+
+
+def test_code_validator_allows_common_pandas_transform_names():
+    safe_samples = [
+        "df = df.rename(columns={'old': 'new'})",
+        "df = df.replace({'N/A': None})",
+        "df['name'] = df['name'].str.replace('-', ' ')",
+    ]
+
+    for code in safe_samples:
+        validation = CodeValidator().validate(code)
+        assert validation.is_safe, validation.violations
 
 
 def test_execute_only_revalidates_user_edited_code(tmp_path):

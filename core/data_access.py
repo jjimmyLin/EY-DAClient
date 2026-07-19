@@ -58,6 +58,7 @@ class LocalDataCatalog:
         self._manifest = {str(dataset["dataset_id"]): dataset for dataset in manifest}
         self._dataset_aliases: dict[str, str] = {}
         self._sheet_aliases: dict[str, dict[str, str]] = {}
+        self._sheet_groups: dict[str, dict[str, dict[str, Any]]] = {}
         self._frames: dict[tuple[str, str, tuple[str, ...]], pd.DataFrame] = {}
         self._sample_rows = sample_rows
         self.audit_records: list[dict[str, Any]] = []
@@ -72,6 +73,10 @@ class LocalDataCatalog:
                 aliases[sheet_id] = sheet_id
                 aliases[str(sheet["name"])] = sheet_id
             self._sheet_aliases[dataset_id] = aliases
+            self._sheet_groups[dataset_id] = {
+                str(group["group_id"]): group
+                for group in dataset.get("sheet_groups", [])
+            }
 
         self.dfs = DatasetCollection(self)
 
@@ -157,6 +162,7 @@ class LocalDataCatalog:
         query: str,
         *,
         sources: dict[str, tuple[str, str] | list[str]] | None = None,
+        sheet_groups: dict[str, tuple[str, str] | list[str]] | None = None,
         max_rows: int | None = None,
         **tables: pd.DataFrame,
     ) -> pd.DataFrame:
@@ -169,8 +175,7 @@ class LocalDataCatalog:
 
         try:
             for alias, reference in (sources or {}).items():
-                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias):
-                    raise ValueError(f"Invalid SQL source alias: {alias!r}")
+                self._validate_sql_alias(alias)
                 dataset_id = self.resolve_dataset(str(reference[0]))
                 sheet_id = self.resolve_sheet(dataset_id, str(reference[1]))
                 sheet = self._sheet_manifest(dataset_id, sheet_id)
@@ -181,6 +186,20 @@ class LocalDataCatalog:
                 limit = f" LIMIT {int(self._sample_rows)}" if self._sample_rows else ""
                 connection.execute(
                     f'CREATE VIEW "{alias}" AS SELECT * FROM read_parquet(\'{path}\'){limit}'
+                )
+                source_names.append(alias)
+            for alias, reference in (sheet_groups or {}).items():
+                self._validate_sql_alias(alias)
+                dataset_id = self.resolve_dataset(str(reference[0]))
+                group = self._sheet_group_manifest(dataset_id, str(reference[1]))
+                union_sql = self._sheet_group_union_sql(
+                    dataset_id,
+                    group,
+                    selected_columns=(),
+                    add_source_sheet=True,
+                )
+                connection.execute(
+                    f'CREATE VIEW "{alias}" AS {union_sql}'
                 )
                 source_names.append(alias)
             for name, frame in tables.items():
@@ -242,11 +261,200 @@ class LocalDataCatalog:
         )
         return merged
 
+    def union_sheets(
+        self,
+        dataset_key: str,
+        *,
+        group_id: str | None = None,
+        sheet_ids: list[str] | tuple[str, ...] | None = None,
+        columns: list[str] | None = None,
+        add_source_sheet: bool = True,
+        max_rows: int | None = None,
+    ) -> pd.DataFrame:
+        dataset_id = self.resolve_dataset(dataset_key)
+        group = self._sheet_group_manifest(dataset_id, group_id) if group_id else None
+        if sheet_ids is None:
+            if group is None:
+                raise ValueError("data.union_sheets() requires group_id or sheet_ids")
+            sheet_ids = [str(sheet_id) for sheet_id in group.get("sheet_ids", [])]
+        resolved_sheet_ids = [
+            self.resolve_sheet(dataset_id, str(sheet_id))
+            for sheet_id in sheet_ids
+        ]
+        if not resolved_sheet_ids:
+            raise ValueError("data.union_sheets() requires at least one sheet")
+        if group is not None:
+            group_sheet_ids = {str(sheet_id) for sheet_id in group.get("sheet_ids", [])}
+            outside_group = sorted(set(resolved_sheet_ids) - group_sheet_ids)
+            if outside_group:
+                raise ValueError(
+                    "data.union_sheets() sheet_ids must belong to the selected group: "
+                    f"{outside_group}"
+                )
+
+        selected_columns = tuple(str(column) for column in (columns or []))
+        result_limit = max_rows
+        if result_limit is not None and result_limit <= 0:
+            raise ValueError("data.union_sheets() max_rows must be positive")
+
+        sheets = [
+            self._sheet_manifest(dataset_id, sheet_id)
+            for sheet_id in resolved_sheet_ids
+        ]
+        for sheet in sheets:
+            self._guard_large_projection(sheet, selected_columns)
+            self._validate_projection(sheet, selected_columns)
+
+        source_sheet_column = self._unique_helper_column(
+            "source_sheet",
+            [column for sheet in sheets for column in sheet.get("columns", [])],
+        )
+        source_sheet_id_column = self._unique_helper_column(
+            "source_sheet_id",
+            [
+                *[column for sheet in sheets for column in sheet.get("columns", [])],
+                source_sheet_column,
+            ],
+        )
+        query = self._union_sql_for_sheets(
+            sheets,
+            selected_columns=selected_columns,
+            add_source_sheet=add_source_sheet,
+            source_sheet_column=source_sheet_column,
+            source_sheet_id_column=source_sheet_id_column,
+        )
+        if result_limit is not None:
+            query = (
+                f"SELECT * FROM ({query}) AS _union_result "
+                f"LIMIT {int(result_limit)}"
+            )
+
+        connection = self._connect()
+        try:
+            frame = connection.execute(query).df()
+        finally:
+            connection.close()
+        self.audit_records.append(
+            {
+                "kind": "union",
+                "dataset_id": dataset_id,
+                "group_id": group_id,
+                "sheet_ids": resolved_sheet_ids,
+                "rows": len(frame),
+                "sampled": bool(self._sample_rows),
+                "columns": list(frame.columns),
+                "max_rows": result_limit,
+                "truncated": bool(
+                    result_limit is not None and len(frame) >= int(result_limit)
+                ),
+                "guarded": any(self._is_large_sheet(sheet) for sheet in sheets),
+            }
+        )
+        logger.info(
+            "Unioned sheets dataset=%s group=%s sheets=%s rows=%s cols=%s sampled=%s",
+            dataset_id,
+            group_id,
+            len(resolved_sheet_ids),
+            len(frame),
+            len(frame.columns),
+            bool(self._sample_rows),
+        )
+        return frame
+
+    def _sheet_group_union_sql(
+        self,
+        dataset_id: str,
+        group: dict[str, Any],
+        *,
+        selected_columns: tuple[str, ...],
+        add_source_sheet: bool,
+    ) -> str:
+        sheet_ids = [
+            self.resolve_sheet(dataset_id, str(sheet_id))
+            for sheet_id in group.get("sheet_ids", [])
+        ]
+        sheets = [
+            self._sheet_manifest(dataset_id, sheet_id)
+            for sheet_id in sheet_ids
+        ]
+        for sheet in sheets:
+            self._validate_projection(sheet, selected_columns)
+        existing_columns = [
+            column
+            for sheet in sheets
+            for column in sheet.get("columns", [])
+        ]
+        source_sheet_column = self._unique_helper_column(
+            "source_sheet",
+            existing_columns,
+        )
+        source_sheet_id_column = self._unique_helper_column(
+            "source_sheet_id",
+            [*existing_columns, source_sheet_column],
+        )
+        return self._union_sql_for_sheets(
+            sheets,
+            selected_columns=selected_columns,
+            add_source_sheet=add_source_sheet,
+            source_sheet_column=source_sheet_column,
+            source_sheet_id_column=source_sheet_id_column,
+        )
+
+    def _union_sql_for_sheets(
+        self,
+        sheets: list[dict[str, Any]],
+        *,
+        selected_columns: tuple[str, ...],
+        add_source_sheet: bool,
+        source_sheet_column: str,
+        source_sheet_id_column: str,
+    ) -> str:
+        union_parts: list[str] = []
+        for sheet in sheets:
+            source_path = (
+                sheet.get("sample_cache_path") if self._sample_rows else sheet.get("cache_path")
+            ) or sheet["cache_path"]
+            path = self._literal(str(source_path))
+            base_projection = (
+                ", ".join(self._quote(column) for column in selected_columns)
+                if selected_columns
+                else "*"
+            )
+            helper_projection = ""
+            if add_source_sheet:
+                helper_projection = (
+                    f", {self._literal(str(sheet.get('name') or ''))} "
+                    f"AS {self._quote(source_sheet_column)}, "
+                    f"{self._literal(str(sheet.get('sheet_id') or ''))} "
+                    f"AS {self._quote(source_sheet_id_column)}"
+                )
+            limit = f" LIMIT {int(self._sample_rows)}" if self._sample_rows else ""
+            union_parts.append(
+                f"SELECT {base_projection}{helper_projection} "
+                f"FROM read_parquet({path}){limit}"
+            )
+        return " UNION ALL ".join(union_parts)
+
     def _sheet_manifest(self, dataset_id: str, sheet_id: str) -> dict[str, Any]:
         for sheet in self._manifest[dataset_id].get("sheets", []):
             if str(sheet["sheet_id"]) == sheet_id:
                 return sheet
         raise KeyError(f"Missing sheet manifest: {dataset_id}/{sheet_id}")
+
+    def _sheet_group_manifest(
+        self,
+        dataset_id: str,
+        group_id: str | None,
+    ) -> dict[str, Any]:
+        key = str(group_id or "")
+        group = self._sheet_groups.get(dataset_id, {}).get(key)
+        if group is None:
+            available = sorted(self._sheet_groups.get(dataset_id, {}))
+            raise KeyError(
+                f"Unknown sheet group {key!r} for {dataset_id}. "
+                f"Available group IDs: {available}"
+            )
+        return group
 
     def _guard_large_projection(self, sheet: dict[str, Any], selected_columns: tuple[str, ...]) -> None:
         if self._sample_rows:
@@ -256,9 +464,26 @@ class LocalDataCatalog:
         if not self._is_large_sheet(sheet):
             return
         raise ValueError(
-            "This sheet is large. Use data.get(..., columns=[...]) or data.sql(...) "
-            "instead of loading the full sheet into Pandas."
+            "This sheet is large. Use data.get(..., columns=[...]), "
+            "data.union_sheets(..., columns=[...]), or data.sql(...) instead "
+            "of loading the full sheet into Pandas."
         )
+
+    @staticmethod
+    def _validate_projection(sheet: dict[str, Any], selected_columns: tuple[str, ...]) -> None:
+        if not selected_columns:
+            return
+        available = set(sheet.get("columns") or [])
+        missing = [
+            column
+            for column in selected_columns
+            if column not in available
+        ]
+        if missing:
+            raise KeyError(
+                f"Columns missing from {sheet.get('name') or sheet.get('sheet_id')}: "
+                f"{missing}"
+            )
 
     @staticmethod
     def _is_large_sheet(sheet: dict[str, Any]) -> bool:
@@ -289,6 +514,11 @@ class LocalDataCatalog:
             raise ValueError("data.sql() requires a SELECT or WITH query")
 
     @staticmethod
+    def _validate_sql_alias(alias: str) -> None:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias):
+            raise ValueError(f"Invalid SQL source alias: {alias!r}")
+
+    @staticmethod
     def _relationship(
         left: pd.DataFrame,
         right: pd.DataFrame,
@@ -312,6 +542,18 @@ class LocalDataCatalog:
     @staticmethod
     def _quote(identifier: str) -> str:
         return '"' + str(identifier).replace('"', '""') + '"'
+
+    @staticmethod
+    def _literal(value: str) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    @staticmethod
+    def _unique_helper_column(base: str, existing_columns: list[str]) -> str:
+        existing = set(existing_columns)
+        candidate = base
+        while candidate in existing:
+            candidate = f"_{candidate}"
+        return candidate
 
     @staticmethod
     def _connect() -> duckdb.DuckDBPyConnection:
