@@ -1,6 +1,8 @@
-import sys
+import logging
 import re
+import sys
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from PySide6.QtCore import (
     Qt,
@@ -58,16 +60,23 @@ from ui.floating_controls import (
     SuggestionPopover,
 )
 from ui.overview_popover import OverviewPopover
+from ui.experience_feedback import ExperienceFeedbackCard
 from ui.result_panel import AnalysisResultPanel, RESULT_PANEL_STYLE
 from ui.cleaning_page import CleaningPage, CLEANING_PAGE_STYLE
 from ui.data_portal import DataPortalPage, DATA_PORTAL_STYLE
 from ui.data_portal import SUPPORTED_DATASET_SUFFIXES
 from core.analysis_result import AnalysisResult
+from core.experience_payload import new_analysis_run_id, new_analysis_session_id
 from config.settings import settings
+from services.experience_service import ExperienceService
 from workers.analysis_worker import AnalysisWorker
+from workers.experience_worker import ExperienceSubmissionQueue
 from workers.import_worker import ImportWorker
 from workers.cleaning_worker import CleaningExecutionWorker, CleaningProfileWorker
 from workers.export_worker import AnalysisExportWorker
+
+
+logger = logging.getLogger(__name__)
 
 
 class TitleBar(QWidget):
@@ -290,6 +299,14 @@ class MainWindow(QMainWindow):
         self._cleaning_worker = None
         self._export_thread = None
         self._export_worker = None
+        self._experience_submissions = ExperienceSubmissionQueue(self)
+        self._experience_submissions.submitted.connect(
+            self._on_experience_submission_finished
+        )
+        self._experience_submissions.failed.connect(
+            self._on_experience_submission_failed
+        )
+        self._experience_prompt_task_id = None
         self._dataset_states = {}
         self._selected_datasets = set()
         self._active_mode = ""
@@ -723,6 +740,9 @@ class MainWindow(QMainWindow):
         self.suggestion_popover.suggestion_selected.connect(self._apply_suggestion)
         self.suggestion_popover.installEventFilter(self)
         self.overview_popover = OverviewPopover(self)
+        self.experience_feedback = ExperienceFeedbackCard(self.workspace)
+        self.experience_feedback.useful.connect(self._on_experience_useful)
+        self.experience_feedback.dismissed.connect(self._on_experience_dismissed)
 
         self.run_btn = QPushButton("Analyze")
         self.run_btn.setObjectName("runBtn")
@@ -796,6 +816,7 @@ class MainWindow(QMainWindow):
         self._refresh_overview_ui()
         self._show_start_page()
         QTimer.singleShot(0, self._position_floating_composer)
+        QTimer.singleShot(0, self._position_experience_feedback)
 
     def _make_title_menu_button(self, text: str) -> QPushButton:
         button = QPushButton(text)
@@ -1058,6 +1079,18 @@ class MainWindow(QMainWindow):
             self.command_bar.show()
             self.command_bar.setGeometry(self._expanded_composer_rect())
             self.command_bar.raise_()
+
+    def _position_experience_feedback(self) -> None:
+        if not hasattr(self, "experience_feedback"):
+            return
+        width = min(340, max(280, self.workspace.width() - 32))
+        height = 126
+        x = max(16, self.workspace.width() - width - 22)
+        y = 58
+        self.experience_feedback.setFixedSize(width, height)
+        self.experience_feedback.update_target_geometry(
+            QRect(x, y, width, height)
+        )
 
     def _animate_composer(self, target: QRect, finished) -> None:
         if self._composer_animation is not None:
@@ -1375,6 +1408,7 @@ class MainWindow(QMainWindow):
         app_surface = getattr(self, "app_surface", None)
         if watched is workspace and event.type() == QEvent.Resize:
             QTimer.singleShot(0, self._position_floating_composer)
+            QTimer.singleShot(0, self._position_experience_feedback)
         elif watched is workspace_root and event.type() == QEvent.Resize:
             QTimer.singleShot(0, self._position_dataset_overlay)
         elif watched is app_surface and event.type() == QEvent.Resize:
@@ -2037,6 +2071,7 @@ class MainWindow(QMainWindow):
             self._refresh_api_status()
 
     def _show_start_page(self) -> None:
+        self._dismiss_experience_prompt(record=True)
         self._task_open = False
         self._active_task_id = None
         self.app_stack.setCurrentIndex(0)
@@ -2054,6 +2089,7 @@ class MainWindow(QMainWindow):
         if self._analysis_thread is not None:
             return
 
+        self._dismiss_experience_prompt(record=True)
         active_task = self._find_history_task(self._active_task_id)
         if active_task and not active_task.get("finished"):
             self._update_history_task("Closed", "Started over", finished=True)
@@ -2264,6 +2300,7 @@ class MainWindow(QMainWindow):
             thread.wait(3000)
 
     def closeEvent(self, event) -> None:
+        self._experience_submissions.shutdown()
         if self._export_worker is not None:
             self._export_worker.cancel()
         if self._export_thread is not None and self._export_thread.isRunning():
@@ -2287,6 +2324,7 @@ class MainWindow(QMainWindow):
         self._stop_overview_worker()
         self.overview_popover.hide()
         self._hide_suggestion_popover()
+        self.experience_feedback.hide_prompt()
         self._set_context_click_guard_enabled(False)
         super().closeEvent(event)
 
@@ -2306,6 +2344,7 @@ class MainWindow(QMainWindow):
         if active_task and not active_task.get("finished"):
             self._update_history_task("Closed", finished=True)
 
+        self._dismiss_experience_prompt(record=True)
         self._show_start_page()
 
     def _set_task_controls_enabled(self, enabled: bool) -> None:
@@ -2320,6 +2359,7 @@ class MainWindow(QMainWindow):
         self.code_reset_btn.setEnabled(enabled)
 
     def _show_history_page(self) -> None:
+        self._dismiss_experience_prompt(record=True)
         self._refresh_history_page()
         self.page_container.setCurrentIndex(1)
 
@@ -2351,6 +2391,16 @@ class MainWindow(QMainWindow):
             "code": "",
             "result": "Waiting for analysis result.",
             "error": "",
+            "analysis_session_id": new_analysis_session_id(),
+            "analysis_run_id": "",
+            "analysis_verified": False,
+            "repair_count": 0,
+            "manual_edit": False,
+            "experience_prompted": False,
+            "experience_consent": None,
+            "experience_status": "not_started",
+            "experience_submitted_at": "",
+            "experience_error": "",
         })
         self._active_task_id = task_id
         self._set_task_title(task_id)
@@ -2391,6 +2441,7 @@ class MainWindow(QMainWindow):
         if task is None or self._analysis_thread is not None:
             return
 
+        self._dismiss_experience_prompt(record=True)
         files_meta = list(task.get("files_meta") or [])
         task_dataset_names = []
         for file_meta in files_meta:
@@ -2701,6 +2752,7 @@ class MainWindow(QMainWindow):
                         generated_code=result.code,
                         code=result.code,
                         analysis_plan=self._analysis_plan,
+                        repair_count=int(result.retries_used or 0),
                         result=self._transcript["execution"],
                         error="",
                     )
@@ -2726,6 +2778,7 @@ class MainWindow(QMainWindow):
                     generated_code=result.code,
                     code=result.code,
                     analysis_plan=self._analysis_plan,
+                    repair_count=int(result.retries_used or 0),
                     result="Python code passed sample preflight and is ready for Apply.",
                     error="",
                 )
@@ -2777,6 +2830,12 @@ class MainWindow(QMainWindow):
 
         elif self._active_worker_mode == "execute":
             if result.success:
+                task = self._find_history_task(self._active_task_id)
+                if task is not None:
+                    task["repair_count"] = (
+                        int(task.get("repair_count") or 0)
+                        + int(result.retries_used or 0)
+                    )
                 if result.code != self.code_editor.toPlainText().strip():
                     self.log_output.append(
                         f"Edited code was automatically corrected "
@@ -2836,6 +2895,18 @@ class MainWindow(QMainWindow):
         )
         self.result_output.set_result(analysis_result)
         self._set_python_tab_visible(True)
+        task = self._find_history_task(self._active_task_id)
+        analysis_run_id = new_analysis_run_id()
+        manual_edit = bool(
+            task
+            and task.get("generated_code")
+            and code.strip() != str(task.get("generated_code") or "").strip()
+        )
+        analysis_verified = bool(
+            execution is not None
+            and execution.success
+            and not execution.preflight_only
+        )
         self._update_history_task(
             "Completed",
             finished=True,
@@ -2843,11 +2914,169 @@ class MainWindow(QMainWindow):
             generated_code=self._generated_code or code,
             result=self._transcript["execution"],
             analysis_result=analysis_result.to_dict(),
+            analysis_run_id=analysis_run_id,
+            analysis_verified=analysis_verified,
+            manual_edit=manual_edit,
             error="",
         )
         self.analysis_tabs.setCurrentIndex(0)
         self.code_apply_btn.setVisible(False)
         self._set_composer_state("done")
+        if analysis_verified:
+            completed_task_id = self._active_task_id
+            QTimer.singleShot(
+                320,
+                partial(
+                    self._show_experience_prompt_if_eligible,
+                    completed_task_id,
+                ),
+            )
+
+    def _show_experience_prompt_if_eligible(
+        self,
+        task_id: int | None,
+    ) -> None:
+        if task_id is None or task_id != self._active_task_id:
+            return
+        if (
+            not self._task_open
+            or self.page_container.currentWidget() is not self.workspace
+        ):
+            return
+        task = self._find_history_task(task_id)
+        if not ExperienceService.should_prompt(task):
+            return
+
+        task["experience_prompted"] = True
+        task["experience_status"] = "prompted"
+        task["experience_error"] = ""
+        task["updated_at"] = self._history_timestamp()
+        self._experience_prompt_task_id = task_id
+        self._refresh_history_page()
+
+        width = min(340, max(280, self.workspace.width() - 32))
+        target = QRect(
+            max(16, self.workspace.width() - width - 22),
+            58,
+            width,
+            126,
+        )
+        self.experience_feedback.show_prompt(target)
+
+    def _on_experience_useful(self) -> None:
+        task_id = self._experience_prompt_task_id
+        task = self._find_history_task(task_id)
+        self._experience_prompt_task_id = None
+        if task is None:
+            return
+
+        task["experience_consent"] = True
+        task["experience_status"] = "queued"
+        task["experience_error"] = ""
+        task["updated_at"] = self._history_timestamp()
+        self._refresh_history_page()
+
+        try:
+            analysis_result = AnalysisResult.from_dict(
+                task.get("analysis_result") or {}
+            )
+            payload = ExperienceService.build_payload(
+                task=task,
+                analysis_result=analysis_result,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Unable to prepare experience payload task_id=%s",
+                task_id,
+            )
+            self._update_experience_task(
+                task_id,
+                experience_status="failed",
+                experience_error=str(exc),
+            )
+            return
+        self._enqueue_experience_submission(task_id, payload)
+
+    def _on_experience_dismissed(self) -> None:
+        task_id = self._experience_prompt_task_id
+        self._experience_prompt_task_id = None
+        task = self._find_history_task(task_id)
+        if task is None:
+            return
+        self._update_experience_task(
+            task_id,
+            experience_consent=False,
+            experience_status="dismissed",
+            experience_error="",
+        )
+
+    def _dismiss_experience_prompt(self, *, record: bool) -> None:
+        task_id = self._experience_prompt_task_id
+        self._experience_prompt_task_id = None
+        if hasattr(self, "experience_feedback"):
+            self.experience_feedback.hide_prompt()
+        if not record:
+            return
+        task = self._find_history_task(task_id)
+        if task is None or task.get("experience_status") != "prompted":
+            return
+        self._update_experience_task(
+            task_id,
+            experience_consent=False,
+            experience_status="dismissed",
+            experience_error="",
+        )
+
+    def _enqueue_experience_submission(
+        self,
+        task_id: int,
+        payload: dict,
+    ) -> None:
+        self._update_experience_task(
+            task_id,
+            experience_status="submitting",
+            experience_error="",
+        )
+        self._experience_submissions.enqueue(task_id, payload)
+
+    def _on_experience_submission_finished(self, task_id: int, result) -> None:
+        self._update_experience_task(
+            task_id,
+            experience_status="submitted",
+            experience_submitted_at=datetime.now().isoformat(timespec="seconds"),
+            experience_error="",
+            experience_workflow_run_id=result.workflow_run_id,
+            experience_knowledge_status=result.knowledge_write_status,
+            experience_candidate_count=result.candidate_count,
+            experience_uploaded_count=result.uploaded_count,
+            experience_failed_count=result.failed_count,
+        )
+        logger.info(
+            "Experience learning completed task_id=%s status=%s uploaded=%s",
+            task_id,
+            result.knowledge_write_status,
+            result.uploaded_count,
+        )
+
+    def _on_experience_submission_failed(self, task_id: int, error: str) -> None:
+        self._update_experience_task(
+            task_id,
+            experience_status="failed",
+            experience_error=error,
+        )
+        logger.warning(
+            "Experience learning failed task_id=%s error=%s",
+            task_id,
+            error,
+        )
+
+    def _update_experience_task(self, task_id: int | None, **updates) -> None:
+        task = self._find_history_task(task_id)
+        if task is None:
+            return
+        task.update(updates)
+        task["updated_at"] = self._history_timestamp()
+        self._refresh_history_page()
 
     def _on_worker_error(self, error: str) -> None:
         self._append_system_event(f"Worker error: {error}")

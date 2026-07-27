@@ -119,6 +119,8 @@ class FileMeta:
     dataset_id: str = ""
     display_name: str = ""
     source_fingerprint: str = ""
+    content_hash: str = ""
+    schema_family_id: str = ""
     profile_mode: str = "full"
     profile_sample_rows: int = 0
 
@@ -180,7 +182,12 @@ class Preprocessor:
         settings.DUCKDB_TEMP_DIR.mkdir(parents=True, exist_ok=True)
         self._ensure_free_disk_space(path)
 
+        self._emit_progress(progress_callback, "fingerprinting", 2, path.name)
         fingerprint = self._fingerprint(path)
+        content_hash = self._content_hash(
+            path,
+            cancel_callback=cancel_callback,
+        )
         dataset_id = f"ds_{fingerprint[:12]}"
         size_kb = size_bytes / 1024
         self._emit_progress(progress_callback, "inspecting", 5, path.name)
@@ -227,6 +234,8 @@ class Preprocessor:
             display_name=path.name,
             dataset_id=dataset_id,
             source_fingerprint=fingerprint,
+            content_hash=content_hash,
+            schema_family_id=self.schema_family_id(sheets),
             file_size_kb=size_kb,
             sheet_count=len(sheets),
             sheets=sheets,
@@ -1259,6 +1268,8 @@ class Preprocessor:
             "file_name": file_meta.file_name,
             "file_path": file_meta.file_path,
             "source_fingerprint": file_meta.source_fingerprint,
+            "content_hash": file_meta.content_hash,
+            "schema_family_id": file_meta.schema_family_id,
             "profile_mode": file_meta.profile_mode,
             "profile_sample_rows": file_meta.profile_sample_rows,
             "sheet_count": file_meta.sheet_count,
@@ -1278,6 +1289,56 @@ class Preprocessor:
         stat = path.stat()
         payload = f"{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
+
+    @classmethod
+    def _content_hash(
+        cls,
+        path: Path,
+        *,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> str:
+        """Return a path-independent identity for the source workbook."""
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            while chunk := source.read(8 * 1024 * 1024):
+                cls._raise_if_cancelled(cancel_callback)
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @classmethod
+    def schema_family_id(cls, sheets: list[SheetMeta]) -> str:
+        """Identify reusable workbook structure without using names or values."""
+        signatures = set()
+        for sheet in sheets:
+            columns = sorted(
+                [
+                    {
+                        "name": " ".join(str(column).split()).casefold(),
+                        "type": cls._dtype_family(sheet.dtypes.get(column, "")),
+                        "roles": sorted(
+                            role
+                            for role, role_columns in sheet.semantic_roles.items()
+                            if column in role_columns
+                        ),
+                    }
+                    for column in sheet.columns
+                ],
+                key=lambda item: item["name"],
+            )
+            signatures.add(
+                json.dumps(
+                    columns,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+        canonical = json.dumps(
+            sorted(signatures),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return "sf_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
 
     @staticmethod
     def _quote(identifier: str) -> str:

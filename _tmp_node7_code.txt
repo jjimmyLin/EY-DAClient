@@ -1,0 +1,736 @@
+import json
+import re
+from typing import Any
+
+
+MAX_CANDIDATES = 5
+
+ALLOWED_KNOWLEDGE_TYPES = {
+    "business_rule",
+    "field_semantics",
+    "analysis_method",
+    "failure_fix",
+    "output_requirement",
+}
+
+ALLOWED_SCOPES = {
+    "dataset",
+    "schema",
+    "project",
+}
+
+KNOWLEDGE_TYPE_LABELS = {
+    "business_rule": "业务规则",
+    "field_semantics": "字段语义",
+    "analysis_method": "分析方法",
+    "failure_fix": "失败修复经验",
+    "output_requirement": "输出要求",
+}
+
+BLOCKED_TEXT_PATTERNS = [
+    "ignore previous",
+    "ignore all previous",
+    "system prompt",
+    "developer message",
+    "reveal prompt",
+    "api key",
+    "authorization:",
+    "忽略以上",
+    "忽略之前",
+    "忽略所有规则",
+    "系统提示词",
+    "开发者消息",
+    "泄露提示词",
+    "访问密钥",
+]
+
+
+def json_string(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":")
+    )
+
+
+def parse_object(value: Any, field_name: str) -> dict:
+    if isinstance(value, dict):
+        return value
+
+    if isinstance(value, str):
+        parsed = json.loads(value)
+        if isinstance(parsed, dict):
+            return parsed
+
+    raise ValueError(f"{field_name} 必须是 JSON 对象")
+
+
+def clean_text(value: Any, max_length: int) -> str:
+    if not isinstance(value, str):
+        return ""
+
+    text = value.strip()
+    text = text.replace("\x00", "")
+    text = text.replace("\r", " ")
+    text = text.replace("\n", " ")
+    text = text.replace("```", "")
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if len(text) > max_length:
+        text = text[:max_length].rstrip()
+
+    return text
+
+
+def clean_string_list(
+    value: Any,
+    max_items: int = 30,
+    max_item_length: int = 500
+) -> list:
+    if not isinstance(value, list):
+        return []
+
+    result = []
+    seen = set()
+
+    for item in value:
+        text = clean_text(item, max_item_length)
+
+        if not text:
+            continue
+
+        dedupe_key = text.casefold()
+
+        if dedupe_key in seen:
+            continue
+
+        seen.add(dedupe_key)
+        result.append(text)
+
+        if len(result) >= max_items:
+            break
+
+    return result
+
+
+def meaningful(value: Any) -> bool:
+    if value is None:
+        return False
+
+    if isinstance(value, str):
+        return bool(value.strip())
+
+    if isinstance(value, (list, dict)):
+        return len(value) > 0
+
+    return True
+
+
+def get_path_value(root: Any, path: str):
+    """
+    支持：
+    request.original_query
+    request.clarifications[0]
+    plan.requirements[0]
+    """
+    if not isinstance(path, str) or not path.strip():
+        return False, None
+
+    normalized_path = re.sub(
+        r"\[(\d+)\]",
+        r".\1",
+        path.strip()
+    )
+
+    parts = [
+        part
+        for part in normalized_path.split(".")
+        if part != ""
+    ]
+
+    if not parts:
+        return False, None
+
+    current = root
+
+    for part in parts:
+        if isinstance(current, dict):
+            if part not in current:
+                return False, None
+            current = current[part]
+
+        elif isinstance(current, list):
+            if not part.isdigit():
+                return False, None
+
+            index = int(part)
+
+            if index < 0 or index >= len(current):
+                return False, None
+
+            current = current[index]
+
+        else:
+            return False, None
+
+    return meaningful(current), current
+
+
+def contains_blocked_content(value: Any) -> bool:
+    serialized = json.dumps(
+        value,
+        ensure_ascii=False
+    ).lower()
+
+    for pattern in BLOCKED_TEXT_PATTERNS:
+        if pattern.lower() in serialized:
+            return True
+
+    # 检查类似 C:\Users\... 或 C:/Users/... 的本地路径。
+    if re.search(r"[a-zA-Z]:[\\/]", serialized):
+        return True
+
+    return False
+
+
+def normalize_confidence(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+
+    try:
+        confidence = float(value)
+    except Exception:
+        return 0.0
+
+    if confidence < 0:
+        return 0.0
+
+    if confidence > 1:
+        return 1.0
+
+    return round(confidence, 4)
+
+
+def add_list_section(
+    parts: list,
+    heading: str,
+    values: list
+):
+    if not values:
+        return
+
+    parts.append(f"## {heading}")
+
+    for value in values:
+        parts.append(f"- {value}")
+
+    parts.append("")
+
+
+def render_document(item: dict) -> str:
+    type_label = KNOWLEDGE_TYPE_LABELS.get(
+        item["knowledge_type"],
+        item["knowledge_type"]
+    )
+
+    parts = [
+        f"# {item['title']}",
+        "",
+        "## 知识类型",
+        type_label,
+        "",
+        "## 适用问题",
+        item["normalized_question"],
+        "",
+        "## 建议适用范围",
+        item["scope_recommendation"],
+        "",
+    ]
+
+    add_list_section(
+        parts,
+        "所需字段",
+        item["required_fields"]
+    )
+
+    add_list_section(
+        parts,
+        "适用条件",
+        item["applicable_conditions"]
+    )
+
+    add_list_section(
+        parts,
+        "不适用条件",
+        item["not_applicable_conditions"]
+    )
+
+    add_list_section(
+        parts,
+        "已确认业务规则",
+        item["business_rules"]
+    )
+
+    add_list_section(
+        parts,
+        "推荐方法",
+        item["method_steps"]
+    )
+
+    add_list_section(
+        parts,
+        "常见风险",
+        item["pitfalls"]
+    )
+
+    return "\n".join(parts).strip()
+
+
+def invalid_result(
+    reason: str,
+    schema_version: str = "",
+    analysis_session_id: str = "",
+    analysis_run_id: str = ""
+) -> dict:
+    return {
+        "status": "invalid",
+        "schema_version": schema_version,
+        "analysis_session_id": analysis_session_id,
+        "analysis_run_id": analysis_run_id,
+        "review_decision": "reject",
+        "candidate_count": 0,
+        "candidate_bundle_json": "[]",
+        "rejection_reasons_json": json_string([reason]),
+    }
+
+
+def main(
+    review_output: Any,
+    normalized_payload: str
+) -> dict:
+    try:
+        payload = parse_object(
+            normalized_payload,
+            "normalized_payload"
+        )
+    except Exception as exc:
+        return invalid_result(
+            f"无法解析 normalized_payload：{str(exc)}"
+        )
+
+    schema_version = clean_text(
+        payload.get("schema_version"),
+        20
+    )
+    policy_version = clean_text(
+        payload.get("policy_version"),
+        100
+    )
+    analysis_session_id = clean_text(
+        payload.get("analysis_session_id"),
+        200
+    )
+    analysis_run_id = clean_text(
+        payload.get("analysis_run_id"),
+        200
+    )
+
+    try:
+        review = parse_object(
+            review_output,
+            "review_output"
+        )
+    except Exception as exc:
+        return invalid_result(
+            f"无法解析审查模型输出：{str(exc)}",
+            schema_version,
+            analysis_session_id,
+            analysis_run_id
+        )
+
+    review_decision = clean_text(
+        review.get("review_decision"),
+        30
+    )
+
+    if review_decision not in {
+        "accept",
+        "partial_accept",
+        "reject",
+    }:
+        return invalid_result(
+            "审查模型返回了不支持的 review_decision",
+            schema_version,
+            analysis_session_id,
+            analysis_run_id
+        )
+
+    approved_items = review.get("approved_items", [])
+
+    if not isinstance(approved_items, list):
+        return invalid_result(
+            "approved_items 必须是数组",
+            schema_version,
+            analysis_session_id,
+            analysis_run_id
+        )
+
+    rejection_reasons = []
+
+    reviewer_rejected_items = review.get(
+        "rejected_items",
+        []
+    )
+
+    if isinstance(reviewer_rejected_items, list):
+        for rejected in reviewer_rejected_items[:20]:
+            if not isinstance(rejected, dict):
+                continue
+
+            rejected_title = clean_text(
+                rejected.get("title"),
+                120
+            )
+            rejected_reason = clean_text(
+                rejected.get("reason"),
+                500
+            )
+
+            if rejected_title and rejected_reason:
+                rejection_reasons.append(
+                    f"{rejected_title}：{rejected_reason}"
+                )
+            elif rejected_reason:
+                rejection_reasons.append(rejected_reason)
+
+    review_notes = clean_string_list(
+        review.get("review_notes", []),
+        max_items=20,
+        max_item_length=500
+    )
+
+    actor = payload.get("actor")
+    dataset = payload.get("dataset")
+    versions = payload.get("versions")
+
+    if not isinstance(actor, dict):
+        actor = {}
+
+    if not isinstance(dataset, dict):
+        dataset = {}
+
+    if not isinstance(versions, dict):
+        versions = {}
+
+    accepted = []
+    seen_titles = set()
+
+    # normalized_payload 本身就是证据根对象。
+    evidence_root = payload
+
+    for source_index, source_item in enumerate(
+        approved_items[:MAX_CANDIDATES],
+        start=1
+    ):
+        prefix = f"候选 {source_index}"
+
+        if not isinstance(source_item, dict):
+            rejection_reasons.append(
+                f"{prefix}：候选内容不是对象"
+            )
+            continue
+
+        knowledge_type = clean_text(
+            source_item.get("knowledge_type"),
+            50
+        )
+
+        if knowledge_type not in ALLOWED_KNOWLEDGE_TYPES:
+            rejection_reasons.append(
+                f"{prefix}：知识类型不受支持"
+            )
+            continue
+
+        scope = clean_text(
+            source_item.get("scope_recommendation"),
+            30
+        )
+
+        if scope not in ALLOWED_SCOPES:
+            rejection_reasons.append(
+                f"{prefix}：适用范围不受支持"
+            )
+            continue
+
+        title = clean_text(
+            source_item.get("title"),
+            120
+        )
+        normalized_question = clean_text(
+            source_item.get("normalized_question"),
+            500
+        )
+
+        if not title:
+            rejection_reasons.append(
+                f"{prefix}：缺少标题"
+            )
+            continue
+
+        if not normalized_question:
+            rejection_reasons.append(
+                f"{prefix}：缺少标准化问题"
+            )
+            continue
+
+        title_key = title.casefold()
+
+        if title_key in seen_titles:
+            rejection_reasons.append(
+                f"{prefix}：与本批次其他候选标题重复"
+            )
+            continue
+
+        confidence = normalize_confidence(
+            source_item.get("confidence")
+        )
+
+        if confidence < 0.6:
+            rejection_reasons.append(
+                f"{prefix}：置信度低于 0.6"
+            )
+            continue
+
+        if source_item.get("sensitive") is not False:
+            rejection_reasons.append(
+                f"{prefix}：候选仍被标记为敏感内容"
+            )
+            continue
+
+        required_fields = clean_string_list(
+            source_item.get("required_fields", []),
+            max_items=50,
+            max_item_length=200
+        )
+        applicable_conditions = clean_string_list(
+            source_item.get("applicable_conditions", []),
+            max_items=30,
+            max_item_length=500
+        )
+        not_applicable_conditions = clean_string_list(
+            source_item.get(
+                "not_applicable_conditions",
+                []
+            ),
+            max_items=30,
+            max_item_length=500
+        )
+        business_rules = clean_string_list(
+            source_item.get("business_rules", []),
+            max_items=30,
+            max_item_length=500
+        )
+        method_steps = clean_string_list(
+            source_item.get("method_steps", []),
+            max_items=30,
+            max_item_length=500
+        )
+        pitfalls = clean_string_list(
+            source_item.get("pitfalls", []),
+            max_items=30,
+            max_item_length=500
+        )
+        evidence_ids = clean_string_list(
+            source_item.get("evidence_ids", []),
+            max_items=20,
+            max_item_length=200
+        )
+        redaction_notes = clean_string_list(
+            source_item.get("redaction_notes", []),
+            max_items=20,
+            max_item_length=500
+        )
+
+        if not evidence_ids:
+            rejection_reasons.append(
+                f"{prefix}：没有证据引用"
+            )
+            continue
+
+        invalid_evidence_ids = []
+
+        for evidence_id in evidence_ids:
+            exists, _ = get_path_value(
+                evidence_root,
+                evidence_id
+            )
+
+            if not exists:
+                invalid_evidence_ids.append(evidence_id)
+
+        if invalid_evidence_ids:
+            rejection_reasons.append(
+                f"{prefix}：以下证据路径不存在或为空："
+                + "、".join(invalid_evidence_ids)
+            )
+            continue
+
+        if (
+            not applicable_conditions
+            and not business_rules
+            and not method_steps
+        ):
+            rejection_reasons.append(
+                f"{prefix}：没有足够的可复用知识内容"
+            )
+            continue
+
+        normalized_item = {
+            "knowledge_type": knowledge_type,
+            "title": title,
+            "normalized_question": normalized_question,
+            "scope_recommendation": scope,
+            "required_fields": required_fields,
+            "applicable_conditions": applicable_conditions,
+            "not_applicable_conditions": (
+                not_applicable_conditions
+            ),
+            "business_rules": business_rules,
+            "method_steps": method_steps,
+            "pitfalls": pitfalls,
+            "evidence_ids": evidence_ids,
+            "confidence": confidence,
+            "sensitive": False,
+            "redaction_notes": redaction_notes,
+        }
+
+        if contains_blocked_content(normalized_item):
+            rejection_reasons.append(
+                f"{prefix}：包含路径、密钥提示或疑似提示注入内容"
+            )
+            continue
+
+        document_markdown = render_document(
+            normalized_item
+        )
+
+        metadata_suggestion = {
+            "tenant_id": clean_text(
+                actor.get("tenant_id"),
+                200
+            ),
+            "project_id": clean_text(
+                actor.get("project_id"),
+                200
+            ),
+            "dataset_hash": clean_text(
+                dataset.get("content_hash"),
+                200
+            ),
+            "schema_family_id": clean_text(
+                dataset.get("schema_family_id"),
+                200
+            ),
+            "knowledge_type": knowledge_type,
+            "scope": scope,
+            "analysis_session_id": analysis_session_id,
+            "analysis_run_id": analysis_run_id,
+            "confidence": confidence,
+            "app_version": clean_text(
+                versions.get("app_version"),
+                100
+            ),
+            "workflow_version": clean_text(
+                versions.get(
+                    "analysis_workflow_version"
+                ),
+                100
+            ),
+            "status": "candidate",
+            "validated": 0,
+        }
+
+        accepted.append({
+            "candidate_index": len(accepted) + 1,
+            **normalized_item,
+            "document_markdown": document_markdown,
+            "metadata_suggestion": metadata_suggestion,
+        })
+
+        seen_titles.add(title_key)
+
+    candidate_count = len(accepted)
+
+    if candidate_count > 0:
+        status = "candidate_ready"
+    else:
+        status = "no_knowledge"
+
+    bundle = {
+        "schema_version": schema_version,
+        "policy_version": policy_version,
+        "analysis_session_id": analysis_session_id,
+        "analysis_run_id": analysis_run_id,
+        "source_context": {
+            "actor": {
+                "tenant_id": clean_text(
+                    actor.get("tenant_id"),
+                    200
+                ),
+                "project_id": clean_text(
+                    actor.get("project_id"),
+                    200
+                ),
+                "user_id": clean_text(
+                    actor.get("user_id"),
+                    200
+                ),
+            },
+            "dataset": {
+                "content_hash": clean_text(
+                    dataset.get("content_hash"),
+                    200
+                ),
+                "schema_family_id": clean_text(
+                    dataset.get("schema_family_id"),
+                    200
+                ),
+            },
+            "versions": {
+                "app_version": clean_text(
+                    versions.get("app_version"),
+                    100
+                ),
+                "analysis_workflow_version": clean_text(
+                    versions.get(
+                        "analysis_workflow_version"
+                    ),
+                    100
+                ),
+            },
+        },
+        "review": {
+            "decision": review_decision,
+            "notes": review_notes,
+        },
+        "candidates": accepted,
+    }
+
+    candidate_bundle_json = (
+        json_string(bundle)
+        if candidate_count > 0
+        else "[]"
+    )
+
+    return {
+        "status": status,
+        "schema_version": schema_version,
+        "analysis_session_id": analysis_session_id,
+        "analysis_run_id": analysis_run_id,
+        "review_decision": review_decision,
+        "candidate_count": candidate_count,
+        "candidate_bundle_json": candidate_bundle_json,
+        "rejection_reasons_json": json_string(
+            rejection_reasons
+        ),
+    }

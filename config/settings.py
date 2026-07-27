@@ -19,6 +19,9 @@ from config.runtime_paths import (
 ENV_FILE = env_file()
 load_dotenv(dotenv_path=ENV_FILE, override=True)
 
+_BUILT_IN_EXPERIENCE_BASE_URL = "https://ai-platform-uat.ey.net/v1"
+_BUILT_IN_EXPERIENCE_API_KEY = "app-kwvXgMWHQ6dKxxOzfDaaGltY"
+
 
 class Settings:
     """Application-wide configuration surface."""
@@ -37,6 +40,33 @@ class Settings:
     )
     DIFY_API_KEY = os.getenv("DIFY_API_KEY", "")
     DIFY_TIMEOUT = int(os.getenv("DIFY_TIMEOUT", "60"))
+
+    EXPERIENCE_LEARNING_ENABLED = os.getenv(
+        "EXPERIENCE_LEARNING_ENABLED",
+        "true",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    DIFY_EXPERIENCE_BASE_URL = _BUILT_IN_EXPERIENCE_BASE_URL
+    DIFY_EXPERIENCE_API_KEY = _BUILT_IN_EXPERIENCE_API_KEY
+    DIFY_EXPERIENCE_TIMEOUT = int(
+        os.getenv("DIFY_EXPERIENCE_TIMEOUT", "120")
+    )
+    EXPERIENCE_MAX_PAYLOAD_CHARS = int(
+        os.getenv("EXPERIENCE_MAX_PAYLOAD_CHARS", "40000")
+    )
+    EXPERIENCE_TENANT_ID = os.getenv(
+        "EXPERIENCE_TENANT_ID",
+        "ey-da-client",
+    )
+    EXPERIENCE_PROJECT_ID = os.getenv(
+        "EXPERIENCE_PROJECT_ID",
+        "ey-intelligent-da-client",
+    )
+    EXPERIENCE_USER_ID = os.getenv("EXPERIENCE_USER_ID", "")
+    APP_VERSION = os.getenv("APP_VERSION", "development")
+    ANALYSIS_WORKFLOW_VERSION = os.getenv(
+        "ANALYSIS_WORKFLOW_VERSION",
+        "unspecified",
+    )
 
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
@@ -175,6 +205,38 @@ class Settings:
         cls.DIFY_BASE_URL = os.getenv("DIFY_BASE_URL", cls.DIFY_BASE_URL)
         cls.DIFY_API_KEY = os.getenv("DIFY_API_KEY", "")
         cls.DIFY_TIMEOUT = int(os.getenv("DIFY_TIMEOUT", str(cls.DIFY_TIMEOUT)))
+        cls.EXPERIENCE_LEARNING_ENABLED = cls._env_bool(
+            "EXPERIENCE_LEARNING_ENABLED",
+            cls.EXPERIENCE_LEARNING_ENABLED,
+        )
+        cls.DIFY_EXPERIENCE_BASE_URL = _BUILT_IN_EXPERIENCE_BASE_URL
+        cls.DIFY_EXPERIENCE_API_KEY = _BUILT_IN_EXPERIENCE_API_KEY
+        cls.DIFY_EXPERIENCE_TIMEOUT = int(
+            os.getenv(
+                "DIFY_EXPERIENCE_TIMEOUT",
+                str(cls.DIFY_EXPERIENCE_TIMEOUT),
+            )
+        )
+        cls.EXPERIENCE_MAX_PAYLOAD_CHARS = int(
+            os.getenv(
+                "EXPERIENCE_MAX_PAYLOAD_CHARS",
+                str(cls.EXPERIENCE_MAX_PAYLOAD_CHARS),
+            )
+        )
+        cls.EXPERIENCE_TENANT_ID = os.getenv(
+            "EXPERIENCE_TENANT_ID",
+            cls.EXPERIENCE_TENANT_ID,
+        )
+        cls.EXPERIENCE_PROJECT_ID = os.getenv(
+            "EXPERIENCE_PROJECT_ID",
+            cls.EXPERIENCE_PROJECT_ID,
+        )
+        cls.EXPERIENCE_USER_ID = os.getenv("EXPERIENCE_USER_ID", "")
+        cls.APP_VERSION = os.getenv("APP_VERSION", cls.APP_VERSION)
+        cls.ANALYSIS_WORKFLOW_VERSION = os.getenv(
+            "ANALYSIS_WORKFLOW_VERSION",
+            cls.ANALYSIS_WORKFLOW_VERSION,
+        )
         cls.GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
         cls.GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", cls.GEMINI_BASE_URL)
         cls.GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", str(cls.GEMINI_TIMEOUT)))
