@@ -41,6 +41,22 @@ class Settings:
     DIFY_API_KEY = os.getenv("DIFY_API_KEY", "")
     DIFY_TIMEOUT = int(os.getenv("DIFY_TIMEOUT", "60"))
 
+    DIFY_METRIC_BASE_URL = os.getenv(
+        "DIFY_METRIC_BASE_URL",
+        DIFY_BASE_URL,
+    )
+    DIFY_METRIC_API_KEY = os.getenv("DIFY_METRIC_API_KEY", "")
+    DIFY_METRIC_TIMEOUT = int(os.getenv("DIFY_METRIC_TIMEOUT", "180"))
+    METRIC_MAX_REFERENCE_FILES = int(
+        os.getenv("METRIC_MAX_REFERENCE_FILES", "10")
+    )
+    METRIC_MAX_REFERENCE_FILE_BYTES = int(
+        os.getenv(
+            "METRIC_MAX_REFERENCE_FILE_BYTES",
+            str(30 * 1024 * 1024),
+        )
+    )
+
     EXPERIENCE_LEARNING_ENABLED = os.getenv(
         "EXPERIENCE_LEARNING_ENABLED",
         "true",
@@ -205,6 +221,26 @@ class Settings:
         cls.DIFY_BASE_URL = os.getenv("DIFY_BASE_URL", cls.DIFY_BASE_URL)
         cls.DIFY_API_KEY = os.getenv("DIFY_API_KEY", "")
         cls.DIFY_TIMEOUT = int(os.getenv("DIFY_TIMEOUT", str(cls.DIFY_TIMEOUT)))
+        cls.DIFY_METRIC_BASE_URL = os.getenv(
+            "DIFY_METRIC_BASE_URL",
+            cls.DIFY_BASE_URL,
+        )
+        cls.DIFY_METRIC_API_KEY = os.getenv("DIFY_METRIC_API_KEY", "")
+        cls.DIFY_METRIC_TIMEOUT = int(
+            os.getenv("DIFY_METRIC_TIMEOUT", str(cls.DIFY_METRIC_TIMEOUT))
+        )
+        cls.METRIC_MAX_REFERENCE_FILES = int(
+            os.getenv(
+                "METRIC_MAX_REFERENCE_FILES",
+                str(cls.METRIC_MAX_REFERENCE_FILES),
+            )
+        )
+        cls.METRIC_MAX_REFERENCE_FILE_BYTES = int(
+            os.getenv(
+                "METRIC_MAX_REFERENCE_FILE_BYTES",
+                str(cls.METRIC_MAX_REFERENCE_FILE_BYTES),
+            )
+        )
         cls.EXPERIENCE_LEARNING_ENABLED = cls._env_bool(
             "EXPERIENCE_LEARNING_ENABLED",
             cls.EXPERIENCE_LEARNING_ENABLED,
@@ -279,6 +315,13 @@ class Settings:
             "gemini": {"GEMINI_API_KEY": bool(cls.GEMINI_API_KEY)},
         }
 
+    @classmethod
+    def metric_workflow_status(cls) -> dict[str, bool]:
+        return {
+            "DIFY_METRIC_API_KEY": bool(cls.DIFY_METRIC_API_KEY),
+            "DIFY_METRIC_BASE_URL": bool(cls.DIFY_METRIC_BASE_URL),
+        }
+
     @staticmethod
     def _csv(value: str) -> list[str]:
         return [item.strip() for item in value.split(",") if item.strip()]
@@ -304,6 +347,9 @@ class Settings:
             "DIFY_API_KEY",
             "DIFY_BASE_URL",
             "DIFY_TIMEOUT",
+            "DIFY_METRIC_API_KEY",
+            "DIFY_METRIC_BASE_URL",
+            "DIFY_METRIC_TIMEOUT",
         }
         invalid = set(updates) - allowed
         if invalid:

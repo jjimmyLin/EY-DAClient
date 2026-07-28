@@ -57,6 +57,9 @@ class ApiSettingsDialog(QDialog):
         self._dify_api_key = QLineEdit()
         self._dify_base_url = QLineEdit()
         self._dify_timeout = QLineEdit()
+        self._metric_api_key = QLineEdit()
+        self._metric_base_url = QLineEdit()
+        self._metric_timeout = QLineEdit()
 
         self._devops_api_key = QLineEdit()
         self._devops_base_url = QLineEdit()
@@ -123,16 +126,24 @@ class ApiSettingsDialog(QDialog):
         self._dify_api_key.setEchoMode(QLineEdit.Password)
         self._dify_base_url.setClearButtonEnabled(True)
         self._dify_timeout.setMaximumWidth(120)
+        self._metric_api_key.setEchoMode(QLineEdit.Password)
+        self._metric_base_url.setClearButtonEnabled(True)
+        self._metric_timeout.setMaximumWidth(120)
 
-        form.addRow("Dify API key", self._dify_api_key)
-        form.addRow("Base URL", self._dify_base_url)
-        form.addRow("Timeout (sec)", self._dify_timeout)
+        form.addRow("Analysis API key", self._dify_api_key)
+        form.addRow("Analysis base URL", self._dify_base_url)
+        form.addRow("Analysis timeout (sec)", self._dify_timeout)
 
         note = QLabel(
-            "The app calls Base URL + /workflows/run automatically."
+            "Business indicators use a separate Dify Workflow app. "
+            "Its Start node must define request_payload (Paragraph) and "
+            "reference_files (optional File List)."
         )
         note.setWordWrap(True)
         form.addRow(note)
+        form.addRow("Indicator API key", self._metric_api_key)
+        form.addRow("Indicator base URL", self._metric_base_url)
+        form.addRow("Indicator timeout (sec)", self._metric_timeout)
         return page
 
     def _build_devops_page(self) -> QWidget:
@@ -166,6 +177,9 @@ class ApiSettingsDialog(QDialog):
         self._dify_api_key.setText(settings.DIFY_API_KEY)
         self._dify_base_url.setText(settings.DIFY_BASE_URL)
         self._dify_timeout.setText(str(settings.DIFY_TIMEOUT))
+        self._metric_api_key.setText(settings.DIFY_METRIC_API_KEY)
+        self._metric_base_url.setText(settings.DIFY_METRIC_BASE_URL)
+        self._metric_timeout.setText(str(settings.DIFY_METRIC_TIMEOUT))
 
         self._devops_api_key.setText(settings.GEMINI_API_KEY)
         self._devops_base_url.setText(settings.GEMINI_BASE_URL)
@@ -193,6 +207,19 @@ class ApiSettingsDialog(QDialog):
                 )
             else:
                 self._status_labels[provider].setText(f"Ready for {label}")
+        metric_missing = [
+            key
+            for key, present in settings.metric_workflow_status().items()
+            if not present
+        ]
+        dify_status = self._status_labels.get("dify")
+        if dify_status is not None:
+            suffix = (
+                "Indicator workflow missing: " + ", ".join(metric_missing)
+                if metric_missing
+                else "Indicator workflow ready"
+            )
+            dify_status.setText(f"{dify_status.text()}\n{suffix}")
 
     def _on_provider_changed(self, index: int) -> None:
         self._provider_stack.setCurrentIndex(index)
@@ -215,6 +242,16 @@ class ApiSettingsDialog(QDialog):
             )
             self._dify_base_url.setFocus()
             return
+        metric_base_url = self._metric_base_url.text().strip().rstrip("/")
+        if not self._valid_base_url(metric_base_url):
+            QMessageBox.warning(
+                self,
+                "Invalid Indicator Base URL",
+                "Enter the indicator Dify API base URL, for example "
+                "https://host.example/v1. Do not include /workflows/run.",
+            )
+            self._metric_base_url.setFocus()
+            return
 
         try:
             dify_timeout = self._positive_integer(
@@ -224,6 +261,10 @@ class ApiSettingsDialog(QDialog):
             devops_timeout = self._positive_integer(
                 self._devops_timeout.text(),
                 "DevOps timeout",
+            )
+            metric_timeout = self._positive_integer(
+                self._metric_timeout.text(),
+                "Indicator timeout",
             )
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid timeout", str(exc))
@@ -242,6 +283,9 @@ class ApiSettingsDialog(QDialog):
             "DIFY_API_KEY": self._dify_api_key.text().strip(),
             "DIFY_BASE_URL": dify_base_url,
             "DIFY_TIMEOUT": str(dify_timeout),
+            "DIFY_METRIC_API_KEY": self._metric_api_key.text().strip(),
+            "DIFY_METRIC_BASE_URL": metric_base_url,
+            "DIFY_METRIC_TIMEOUT": str(metric_timeout),
             "GEMINI_API_KEY": devops_api_key,
             "GEMINI_MODEL": "gemini-3.5-flash",
             "GEMINI_BASE_URL": self._devops_base_url.text().strip(),

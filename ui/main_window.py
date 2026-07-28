@@ -65,6 +65,7 @@ from ui.result_panel import AnalysisResultPanel, RESULT_PANEL_STYLE
 from ui.cleaning_page import CleaningPage, CLEANING_PAGE_STYLE
 from ui.data_portal import DataPortalPage, DATA_PORTAL_STYLE
 from ui.data_portal import SUPPORTED_DATASET_SUFFIXES
+from ui.metric_discovery_page import MetricDiscoveryPage
 from core.analysis_result import AnalysisResult
 from core.experience_payload import new_analysis_run_id, new_analysis_session_id
 from config.settings import settings
@@ -74,6 +75,7 @@ from workers.experience_worker import ExperienceSubmissionQueue
 from workers.import_worker import ImportWorker
 from workers.cleaning_worker import CleaningExecutionWorker, CleaningProfileWorker
 from workers.export_worker import AnalysisExportWorker
+from workers.metric_discovery_worker import MetricDiscoveryWorker
 
 
 logger = logging.getLogger(__name__)
@@ -299,6 +301,8 @@ class MainWindow(QMainWindow):
         self._cleaning_worker = None
         self._export_thread = None
         self._export_worker = None
+        self._metric_thread = None
+        self._metric_worker = None
         self._experience_submissions = ExperienceSubmissionQueue(self)
         self._experience_submissions.submitted.connect(
             self._on_experience_submission_finished
@@ -430,10 +434,13 @@ class MainWindow(QMainWindow):
         mode_menu = QMenu(self.mode_button)
         self.mode_analysis_action = QAction("Data Analysis", self)
         self.mode_cleaning_action = QAction("Data Cleaning", self)
+        self.mode_metric_action = QAction("Business Indicators", self)
         self.mode_analysis_action.triggered.connect(self._show_analysis_workspace)
         self.mode_cleaning_action.triggered.connect(self._show_cleaning_page)
+        self.mode_metric_action.triggered.connect(self._show_metric_page)
         mode_menu.addAction(self.mode_analysis_action)
         mode_menu.addAction(self.mode_cleaning_action)
+        mode_menu.addAction(self.mode_metric_action)
         self.mode_button.setMenu(mode_menu)
         self.dataset_library_btn = QPushButton("Datasets · 0")
         self.dataset_library_btn.setObjectName("datasetLibraryButton")
@@ -452,6 +459,7 @@ class MainWindow(QMainWindow):
         self.start_page.files_dropped.connect(self._queue_dataset_files)
         self.start_page.analysis_requested.connect(self._start_new_task)
         self.start_page.cleaning_requested.connect(self._start_cleaning)
+        self.start_page.metric_requested.connect(self._show_metric_page)
         self.start_page.library_requested.connect(self._toggle_context_panel)
 
         workspace_root = QWidget()
@@ -498,9 +506,8 @@ class MainWindow(QMainWindow):
         )
         self.nav_metric_btn = self._make_nav_button(
             QStyle.SP_FileDialogInfoView,
-            "Metrics (coming soon)",
+            "Business analysis indicators",
         )
-        self.nav_metric_btn.setEnabled(False)
         rail_layout.addWidget(self.nav_analysis_btn)
         rail_layout.addWidget(self.nav_clean_btn)
         rail_layout.addWidget(self.nav_metric_btn)
@@ -790,10 +797,12 @@ class MainWindow(QMainWindow):
         self.page_container = QStackedWidget()
         self.history_page = HistoryPage()
         self.cleaning_page = CleaningPage()
+        self.metric_page = MetricDiscoveryPage()
 
         self.page_container.addWidget(self.workspace)
         self.page_container.addWidget(self.history_page)
         self.page_container.addWidget(self.cleaning_page)
+        self.page_container.addWidget(self.metric_page)
 
         self.main_splitter.addWidget(self.page_container)
         self.main_splitter.setCollapsible(0, False)
@@ -801,12 +810,17 @@ class MainWindow(QMainWindow):
         self.history_btn.clicked.connect(self._show_history_page)
         self.nav_analysis_btn.clicked.connect(self._show_analysis_context)
         self.nav_clean_btn.clicked.connect(self._show_cleaning_page)
+        self.nav_metric_btn.clicked.connect(self._show_metric_page)
         self.context_close_btn.clicked.connect(self._close_context_panel)
         self.history_page.btn_back.clicked.connect(lambda: self.page_container.setCurrentIndex(0))
         self.history_page.task_open_requested.connect(self._open_history_task)
         self.cleaning_page.profile_requested.connect(self._start_cleaning_profile)
         self.cleaning_page.execute_requested.connect(self._start_cleaning_execution)
         self.cleaning_page.cancel_requested.connect(self._cancel_cleaning)
+        self.metric_page.analysis_requested.connect(
+            self._start_metric_discovery
+        )
+        self.metric_page.cancel_requested.connect(self._cancel_metric_discovery)
         self.settings_btn.clicked.connect(self._on_settings_clicked)
         self.dataset_list.currentItemChanged.connect(self._on_dataset_selection_changed)
         app_surface.installEventFilter(self)
@@ -934,11 +948,15 @@ class MainWindow(QMainWindow):
         if not self._task_open:
             self._start_new_task()
             return
+        self.app_stack.setCurrentIndex(1)
         self._show_mode_page(self.workspace)
         self._set_active_mode("analysis")
+        self._set_task_title()
         self.nav_clean_btn.setProperty("active", False)
         self.nav_clean_btn.style().unpolish(self.nav_clean_btn)
         self.nav_clean_btn.style().polish(self.nav_clean_btn)
+        QTimer.singleShot(0, self._position_floating_composer)
+        QTimer.singleShot(0, self._position_experience_feedback)
 
     def _show_cleaning_page(self) -> None:
         self.app_stack.setCurrentIndex(1)
@@ -946,9 +964,22 @@ class MainWindow(QMainWindow):
         self._set_active_mode("cleaning")
         self._show_mode_page(self.cleaning_page)
         self._close_context_panel()
+        self._set_task_title()
         self.nav_clean_btn.setProperty("active", True)
         self.nav_clean_btn.style().unpolish(self.nav_clean_btn)
         self.nav_clean_btn.style().polish(self.nav_clean_btn)
+
+    def _show_metric_page(self) -> None:
+        self.app_stack.setCurrentIndex(1)
+        self._set_task_controls_enabled(True)
+        self._set_active_mode("metric")
+        self._show_mode_page(self.metric_page)
+        self._close_context_panel()
+        self.task_title_label.setText("Business indicator discovery")
+        self.task_title_label.setVisible(True)
+        self.nav_metric_btn.setProperty("active", True)
+        self.nav_metric_btn.style().unpolish(self.nav_metric_btn)
+        self.nav_metric_btn.style().polish(self.nav_metric_btn)
 
     def _show_mode_page(self, page: QWidget) -> None:
         current = self.page_container.currentWidget()
@@ -972,6 +1003,47 @@ class MainWindow(QMainWindow):
         animation.finished.connect(finish)
         self._mode_transition_animation = animation
         animation.start()
+
+    def _start_metric_discovery(self, request) -> None:
+        if self._metric_thread is not None:
+            return
+        thread = QThread(self)
+        worker = MetricDiscoveryWorker(request)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.event.connect(self.metric_page.handle_event)
+        worker.finished.connect(self._on_metric_discovery_finished)
+        worker.error.connect(self._on_metric_discovery_failed)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_metric_discovery)
+        self._metric_thread = thread
+        self._metric_worker = worker
+        thread.start()
+
+    def _on_metric_discovery_finished(self, result) -> None:
+        self.metric_page.show_result(result)
+        self.log_output.append(
+            f"Business indicator generation completed: "
+            f"{len(result.indicators)} indicator(s)."
+        )
+
+    def _on_metric_discovery_failed(self, error: str) -> None:
+        self.metric_page.show_error(error)
+        self.log_output.append(f"Business indicator generation failed: {error}")
+
+    def _cancel_metric_discovery(self) -> None:
+        if self._metric_worker is None:
+            return
+        self._metric_worker.cancel()
+        self.metric_page.cancel_button.setEnabled(False)
+        self.metric_page.busy_label.setText("正在取消本次生成")
+
+    def _cleanup_metric_discovery(self) -> None:
+        self._metric_thread = None
+        self._metric_worker = None
 
     def _toggle_context_panel(self) -> None:
         if self._context_panel_open:
@@ -1647,14 +1719,15 @@ class MainWindow(QMainWindow):
         )
         self.start_page.set_library_state(count, pending)
         self.dataset_library_btn.setText(f"Datasets · {count + pending}")
-        in_feature = self.app_stack.currentIndex() == 1
-        self.mode_button.setVisible(count > 0 and in_feature)
-        self.dataset_library_btn.setVisible(count > 0 and in_feature)
-        self.mode_button.setEnabled(count > 0)
+        self._sync_mode_selector_state()
         self.new_analysis_action.setEnabled(count > 0)
         self._sync_cleaning_target()
         self._refresh_workspace_header()
-        if self._task_open and self._current_analysis_result is None:
+        if (
+            self._task_open
+            and self._active_mode == "analysis"
+            and self._current_analysis_result is None
+        ):
             if count == 0:
                 self.result_output.set_empty_state("Add a dataset to continue.")
             elif not self._generated_code and self._analysis_thread is None:
@@ -2162,15 +2235,48 @@ class MainWindow(QMainWindow):
         labels = {
             "analysis": "Mode: Data Analysis",
             "cleaning": "Mode: Data Cleaning",
+            "metric": "Mode: Business Indicators",
         }
         self.mode_button.setText(labels.get(mode, "Mode"))
-        self.mode_button.setVisible(bool(mode) and bool(self.loaded_files))
-        self.dataset_library_btn.setVisible(bool(mode) and bool(self.loaded_files))
-        self.view_context_action.setEnabled(bool(mode) and bool(self.loaded_files))
-        self.mode_analysis_action.setEnabled(mode != "analysis")
-        self.mode_cleaning_action.setEnabled(mode != "cleaning")
+        self._sync_mode_selector_state()
+        for button, active in (
+            (self.nav_clean_btn, mode == "cleaning"),
+            (self.nav_metric_btn, mode == "metric"),
+        ):
+            button.setProperty("active", active)
+            button.style().unpolish(button)
+            button.style().polish(button)
         self._refresh_dataset_selection_ui()
         self._sync_cleaning_target()
+
+    def _sync_mode_selector_state(self) -> None:
+        """Keep mode navigation independent from dataset availability."""
+        in_feature = self.app_stack.currentIndex() == 1
+        selector_available = in_feature and bool(self._active_mode)
+
+        self.mode_button.setVisible(selector_available)
+        self.mode_button.setEnabled(selector_available)
+        self.dataset_library_btn.setVisible(
+            selector_available
+            and self._active_mode in {"analysis", "cleaning"}
+        )
+        self.view_context_action.setEnabled(
+            selector_available
+            and self._active_mode in {"analysis", "cleaning"}
+        )
+
+        # Analysis and cleaning both have useful empty states where users can
+        # open the Dataset Library and import the data they need.
+        self.mode_analysis_action.setEnabled(
+            selector_available and self._active_mode != "analysis"
+        )
+        self.mode_cleaning_action.setEnabled(
+            selector_available
+            and self._active_mode != "cleaning"
+        )
+        self.mode_metric_action.setEnabled(
+            selector_available and self._active_mode != "metric"
+        )
 
     def _start_cleaning_profile(self, dataset_name: str) -> None:
         if self._cleaning_thread is not None:
@@ -2301,6 +2407,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._experience_submissions.shutdown()
+        if self._metric_worker is not None:
+            self._metric_worker.cancel()
+        if self._metric_thread is not None and self._metric_thread.isRunning():
+            self._metric_thread.quit()
+            self._metric_thread.wait(3000)
         if self._export_worker is not None:
             self._export_worker.cancel()
         if self._export_thread is not None and self._export_thread.isRunning():

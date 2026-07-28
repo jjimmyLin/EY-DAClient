@@ -201,6 +201,7 @@ class DataPortalPage(QWidget):
     files_dropped = Signal(list)
     analysis_requested = Signal()
     cleaning_requested = Signal()
+    metric_requested = Signal()
     library_requested = Signal()
 
     def __init__(self, parent=None) -> None:
@@ -223,9 +224,31 @@ class DataPortalPage(QWidget):
         eyebrow = QLabel("DATA WORKSPACE")
         eyebrow.setObjectName("portalEyebrow")
         eyebrow.setAlignment(Qt.AlignCenter)
+
+        title_row = QWidget()
+        title_row.setObjectName("portalTitleRow")
+        title_layout = QHBoxLayout(title_row)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(0)
+        title_balance = QWidget()
+        title_balance.setFixedWidth(180)
         title = QLabel("Start with your data")
         title.setObjectName("portalTitle")
         title.setAlignment(Qt.AlignCenter)
+        self.metric_entry_button = QPushButton(
+            "Design indicators  →"
+        )
+        self.metric_entry_button.setFixedWidth(180)
+        self.metric_entry_button.setObjectName("portalMetricAction")
+        self.metric_entry_button.setCursor(Qt.PointingHandCursor)
+        self.metric_entry_button.setToolTip(
+            "Use before client datasets are available"
+        )
+        self.metric_entry_button.clicked.connect(self.metric_requested)
+        title_layout.addWidget(title_balance)
+        title_layout.addWidget(title, stretch=1)
+        title_layout.addWidget(self.metric_entry_button)
+
         subtitle = QLabel(
             "Import the workbooks you want to clean or analyze. "
             "Your full data stays safely in your local environment."
@@ -235,9 +258,8 @@ class DataPortalPage(QWidget):
         subtitle.setWordWrap(True)
         
         content_layout.addWidget(eyebrow)
-        content_layout.addWidget(title)
+        content_layout.addWidget(title_row)
         content_layout.addWidget(subtitle)
-        content_layout.addSpacing(12)
 
         self.primary_row = QWidget()
         self.primary_row.setObjectName("portalPrimaryRow")
@@ -259,11 +281,11 @@ class DataPortalPage(QWidget):
         prompt = QLabel("NEXT STEPS")
         prompt.setObjectName("portalCapabilityPrompt")
         
-        self.analysis_card = QPushButton("Data Analyze")
+        self.analysis_card = QPushButton("Analyze Workbooks")
         self.analysis_card.setObjectName("portalModeAction")
         self.analysis_card.setCursor(Qt.PointingHandCursor)
         
-        self.cleaning_card = QPushButton("Data Clean")
+        self.cleaning_card = QPushButton("Clean Workbooks")
         self.cleaning_card.setObjectName("portalModeAction")
         self.cleaning_card.setCursor(Qt.PointingHandCursor)
         
@@ -528,5 +550,19 @@ QPushButton#portalModeAction:hover {
 QPushButton#portalModeAction:pressed { 
     background: #e8f0fe;
     color: #174ea6; 
+}
+QPushButton#portalMetricAction {
+    color: #174ea6;
+    background: #f3f7fd;
+    border: 1px solid #d2e3fc;
+    border-radius: 14px;
+    padding: 7px 16px;
+    font-size: 12px;
+    font-weight: 650;
+}
+QPushButton#portalMetricAction:hover {
+    color: #0b57d0;
+    background: #e8f0fe;
+    border-color: #8ab4f8;
 }
 """

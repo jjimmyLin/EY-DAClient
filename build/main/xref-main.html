@@ -33,7 +33,10 @@ imports:
  &#8226;   <a href="#core.analysis_contract">core.analysis_contract</a>
  &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#core.data_access">core.data_access</a>
+ &#8226;   <a href="#core.metric_catalogs">core.metric_catalogs</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
  &#8226;   <a href="#dify.client">dify.client</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#dify.workflow">dify.workflow</a>
  &#8226;   <a href="#duckdb">duckdb</a>
  &#8226;   <a href="#encodings">encodings</a>
@@ -205,8 +208,10 @@ imports:
  &#8226;   <a href="#traceback">traceback</a>
  &#8226;   <a href="#types">types</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#ui.metric_discovery_page">ui.metric_discovery_page</a>
  &#8226;   <a href="#warnings">warnings</a>
  &#8226;   <a href="#weakref">weakref</a>
+ &#8226;   <a href="#workers.metric_discovery_worker">workers.metric_discovery_worker</a>
  &#8226;   <a href="#xlrd">xlrd</a>
 
   </div>
@@ -3458,6 +3463,7 @@ imported by:
  &#8226;   <a href="#ui.floating_controls">ui.floating_controls</a>
  &#8226;   <a href="#ui.history_page">ui.history_page</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#ui.metric_discovery_page">ui.metric_discovery_page</a>
  &#8226;   <a href="#ui.overview_popover">ui.overview_popover</a>
  &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
  &#8226;   <a href="#workers.analysis_worker">workers.analysis_worker</a>
@@ -3465,6 +3471,7 @@ imported by:
  &#8226;   <a href="#workers.experience_worker">workers.experience_worker</a>
  &#8226;   <a href="#workers.export_worker">workers.export_worker</a>
  &#8226;   <a href="#workers.import_worker">workers.import_worker</a>
+ &#8226;   <a href="#workers.metric_discovery_worker">workers.metric_discovery_worker</a>
 
   </div>
 
@@ -3495,6 +3502,7 @@ imported by:
  &#8226;   <a href="#ui.floating_controls">ui.floating_controls</a>
  &#8226;   <a href="#ui.history_page">ui.history_page</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#ui.metric_discovery_page">ui.metric_discovery_page</a>
  &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
 
   </div>
@@ -3554,6 +3562,7 @@ imported by:
  &#8226;   <a href="#ui.floating_controls">ui.floating_controls</a>
  &#8226;   <a href="#ui.history_page">ui.history_page</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#ui.metric_discovery_page">ui.metric_discovery_page</a>
  &#8226;   <a href="#ui.overview_popover">ui.overview_popover</a>
  &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
 
@@ -3780,6 +3789,8 @@ imported by:
  &#8226;   <a href="#core.data_access">core.data_access</a>
  &#8226;   <a href="#core.executor">core.executor</a>
  &#8226;   <a href="#core.experience_payload">core.experience_payload</a>
+ &#8226;   <a href="#core.metric_catalogs">core.metric_catalogs</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
  &#8226;   <a href="#core.multi_file_resolver">core.multi_file_resolver</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#core.prompt_builder">core.prompt_builder</a>
@@ -3788,6 +3799,7 @@ imported by:
  &#8226;   <a href="#dateutil.parser._parser">dateutil.parser._parser</a>
  &#8226;   <a href="#dify.client">dify.client</a>
  &#8226;   <a href="#dify.experience_client">dify.experience_client</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#dify.workflow">dify.workflow</a>
  &#8226;   <a href="#doctest">doctest</a>
  &#8226;   <a href="#et_xmlfile.xmlfile">et_xmlfile.xmlfile</a>
@@ -4187,6 +4199,7 @@ imported by:
  &#8226;   <a href="#ui.decision_panel">ui.decision_panel</a>
  &#8226;   <a href="#ui.experience_feedback">ui.experience_feedback</a>
  &#8226;   <a href="#ui.floating_controls">ui.floating_controls</a>
+ &#8226;   <a href="#ui.metric_discovery_page">ui.metric_discovery_page</a>
  &#8226;   <a href="#ui.overview_popover">ui.overview_popover</a>
  &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
  &#8226;   <a href="#workers.analysis_worker">workers.analysis_worker</a>
@@ -4194,6 +4207,7 @@ imported by:
  &#8226;   <a href="#workers.experience_worker">workers.experience_worker</a>
  &#8226;   <a href="#workers.export_worker">workers.export_worker</a>
  &#8226;   <a href="#workers.import_worker">workers.import_worker</a>
+ &#8226;   <a href="#workers.metric_discovery_worker">workers.metric_discovery_worker</a>
  &#8226;   <a href="#xlrd.biffh">xlrd.biffh</a>
  &#8226;   <a href="#xlrd.book">xlrd.book</a>
  &#8226;   <a href="#xlrd.compdoc">xlrd.compdoc</a>
@@ -11110,6 +11124,7 @@ imported by:
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#cycler">cycler</a>
  &#8226;   <a href="#dify.client">dify.client</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#dify.workflow">dify.workflow</a>
  &#8226;   <a href="#http.client">http.client</a>
  &#8226;   <a href="#httpx._models">httpx._models</a>
@@ -11718,6 +11733,7 @@ imported by:
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#dify.client">dify.client</a>
  &#8226;   <a href="#dify.experience_client">dify.experience_client</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#dify.workflow">dify.workflow</a>
  &#8226;   <a href="#llm">llm</a>
  &#8226;   <a href="#llm.gemini_client">llm.gemini_client</a>
@@ -11725,6 +11741,7 @@ imported by:
  &#8226;   <a href="#services.experience_service">services.experience_service</a>
  &#8226;   <a href="#ui.api_settings_dialog">ui.api_settings_dialog</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#ui.metric_discovery_page">ui.metric_discovery_page</a>
 
   </div>
 
@@ -12275,6 +12292,8 @@ imported by:
  &#8226;   <a href="#core.data_access">core.data_access</a>
  &#8226;   <a href="#core.executor">core.executor</a>
  &#8226;   <a href="#core.experience_payload">core.experience_payload</a>
+ &#8226;   <a href="#core.metric_catalogs">core.metric_catalogs</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
  &#8226;   <a href="#core.multi_file_resolver">core.multi_file_resolver</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#core.prompt_builder">core.prompt_builder</a>
@@ -12505,6 +12524,51 @@ imports:
 imported by:
     <a href="#services.experience_service">services.experience_service</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="core.metric_catalogs"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/core/metric_catalogs.py" type="text/plain"><tt>core.metric_catalogs</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#core">core</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#main.py">main.py</a>
+ &#8226;   <a href="#ui.metric_discovery_page">ui.metric_discovery_page</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="core.metric_discovery"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/core/metric_discovery.py" type="text/plain"><tt>core.metric_discovery</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#core">core</a>
+ &#8226;   <a href="#dataclasses">dataclasses</a>
+ &#8226;   <a href="#datetime">datetime</a>
+ &#8226;   <a href="#json">json</a>
+ &#8226;   <a href="#pathlib">pathlib</a>
+ &#8226;   <a href="#re">re</a>
+ &#8226;   <a href="#typing">typing</a>
+ &#8226;   <a href="#uuid">uuid</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#dify.metric_client">dify.metric_client</a>
+ &#8226;   <a href="#main.py">main.py</a>
+ &#8226;   <a href="#ui.metric_discovery_page">ui.metric_discovery_page</a>
+ &#8226;   <a href="#workers.metric_discovery_worker">workers.metric_discovery_worker</a>
 
   </div>
 
@@ -12831,6 +12895,7 @@ imported by:
  &#8226;   <a href="#core.cleaning_service">core.cleaning_service</a>
  &#8226;   <a href="#core.code_validator">core.code_validator</a>
  &#8226;   <a href="#core.executor">core.executor</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#core.session_manager">core.session_manager</a>
  &#8226;   <a href="#dify.experience_client">dify.experience_client</a>
@@ -12873,6 +12938,7 @@ imported by:
  &#8226;   <a href="#_strptime">_strptime</a>
  &#8226;   <a href="#calendar">calendar</a>
  &#8226;   <a href="#core.analysis_export">core.analysis_export</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#core.session_manager">core.session_manager</a>
  &#8226;   <a href="#dateutil.easter">dateutil.easter</a>
@@ -13444,6 +13510,7 @@ imports:
 imported by:
     <a href="#dify.client">dify.client</a>
  &#8226;   <a href="#dify.experience_client">dify.experience_client</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#dify.workflow">dify.workflow</a>
 
   </div>
@@ -13498,6 +13565,36 @@ imports:
 imported by:
     <a href="#dify">dify</a>
  &#8226;   <a href="#services.experience_service">services.experience_service</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="dify.metric_client"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/dify/metric_client.py" type="text/plain"><tt>dify.metric_client</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#collections.abc">collections.abc</a>
+ &#8226;   <a href="#config.settings">config.settings</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
+ &#8226;   <a href="#dify">dify</a>
+ &#8226;   <a href="#getpass">getpass</a>
+ &#8226;   <a href="#httpx">httpx</a>
+ &#8226;   <a href="#json">json</a>
+ &#8226;   <a href="#llm.cancellation">llm.cancellation</a>
+ &#8226;   <a href="#mimetypes">mimetypes</a>
+ &#8226;   <a href="#pathlib">pathlib</a>
+ &#8226;   <a href="#platform">platform</a>
+ &#8226;   <a href="#time">time</a>
+ &#8226;   <a href="#typing">typing</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#main.py">main.py</a>
+ &#8226;   <a href="#workers.metric_discovery_worker">workers.metric_discovery_worker</a>
 
   </div>
 
@@ -17585,6 +17682,7 @@ imported by:
     <a href="#_pytest.tmpdir">_pytest.tmpdir</a>
  &#8226;   <a href="#core.experience_payload">core.experience_payload</a>
  &#8226;   <a href="#dify.client">dify.client</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#urllib.request">urllib.request</a>
 
   </div>
@@ -19166,6 +19264,7 @@ imports:
 imported by:
     <a href="#dify.client">dify.client</a>
  &#8226;   <a href="#dify.experience_client">dify.experience_client</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#httpx.__version__">httpx.__version__</a>
  &#8226;   <a href="#httpx._api">httpx._api</a>
  &#8226;   <a href="#httpx._auth">httpx._auth</a>
@@ -19940,6 +20039,7 @@ imports:
  &#8226;   <a href="#importlib">importlib</a>
  &#8226;   <a href="#importlib._bootstrap">importlib._bootstrap</a>
  &#8226;   <a href="#importlib._bootstrap_external">importlib._bootstrap_external</a>
+ &#8226;   <a href="#importlib.machinery">importlib.machinery</a>
  &#8226;   <a href="#sys">sys</a>
  &#8226;   <a href="#warnings">warnings</a>
 
@@ -20101,6 +20201,7 @@ imports:
 imported by:
     <a href="#_pytest.assertion.rewrite">_pytest.assertion.rewrite</a>
  &#8226;   <a href="#_pytest.pathlib">_pytest.pathlib</a>
+ &#8226;   <a href="#importlib">importlib</a>
  &#8226;   <a href="#importlib.abc">importlib.abc</a>
  &#8226;   <a href="#inspect">inspect</a>
  &#8226;   <a href="#packaging.tags">packaging.tags</a>
@@ -21118,11 +21219,13 @@ imported by:
  &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#core.executor">core.executor</a>
  &#8226;   <a href="#core.experience_payload">core.experience_payload</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#core.prompt_builder">core.prompt_builder</a>
  &#8226;   <a href="#dateutil.zoneinfo">dateutil.zoneinfo</a>
  &#8226;   <a href="#dify.client">dify.client</a>
  &#8226;   <a href="#dify.experience_client">dify.experience_client</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#dify.workflow">dify.workflow</a>
  &#8226;   <a href="#httpx._content">httpx._content</a>
  &#8226;   <a href="#httpx._main">httpx._main</a>
@@ -21351,11 +21454,13 @@ imports:
 imported by:
     <a href="#dify.client">dify.client</a>
  &#8226;   <a href="#dify.experience_client">dify.experience_client</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#dify.workflow">dify.workflow</a>
  &#8226;   <a href="#llm.gemini_client">llm.gemini_client</a>
  &#8226;   <a href="#services.experience_service">services.experience_service</a>
  &#8226;   <a href="#workers.analysis_worker">workers.analysis_worker</a>
  &#8226;   <a href="#workers.experience_worker">workers.experience_worker</a>
+ &#8226;   <a href="#workers.metric_discovery_worker">workers.metric_discovery_worker</a>
 
   </div>
 
@@ -21530,6 +21635,7 @@ imported by:
  &#8226;   <a href="#workers.experience_worker">workers.experience_worker</a>
  &#8226;   <a href="#workers.export_worker">workers.export_worker</a>
  &#8226;   <a href="#workers.import_worker">workers.import_worker</a>
+ &#8226;   <a href="#workers.metric_discovery_worker">workers.metric_discovery_worker</a>
 
   </div>
 
@@ -25224,7 +25330,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#http.server">http.server</a>
+    <a href="#dify.metric_client">dify.metric_client</a>
+ &#8226;   <a href="#http.server">http.server</a>
  &#8226;   <a href="#httpx._multipart">httpx._multipart</a>
  &#8226;   <a href="#matplotlib.backends.backend_webagg">matplotlib.backends.backend_webagg</a>
  &#8226;   <a href="#openpyxl.packaging.manifest">openpyxl.packaging.manifest</a>
@@ -51891,7 +51998,9 @@ imported by:
  &#8226;   <a href="#core.analysis_result">core.analysis_result</a>
  &#8226;   <a href="#core.cleaning_service">core.cleaning_service</a>
  &#8226;   <a href="#core.executor">core.executor</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#dotenv.main">dotenv.main</a>
  &#8226;   <a href="#httpx._multipart">httpx._multipart</a>
  &#8226;   <a href="#importlib.metadata">importlib.metadata</a>
@@ -52137,6 +52246,7 @@ imported by:
  &#8226;   <a href="#_pytest.terminal">_pytest.terminal</a>
  &#8226;   <a href="#core.experience_payload">core.experience_payload</a>
  &#8226;   <a href="#dify.client">dify.client</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#matplotlib.backends.qt_compat">matplotlib.backends.qt_compat</a>
  &#8226;   <a href="#numpy.f2py.crackfortran">numpy.f2py.crackfortran</a>
  &#8226;   <a href="#numpy.lib._utils_impl">numpy.lib._utils_impl</a>
@@ -62453,6 +62563,7 @@ imported by:
  &#8226;   <a href="#core.cleaning_service">core.cleaning_service</a>
  &#8226;   <a href="#core.data_access">core.data_access</a>
  &#8226;   <a href="#core.experience_payload">core.experience_payload</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
  &#8226;   <a href="#core.multi_file_resolver">core.multi_file_resolver</a>
  &#8226;   <a href="#csv">csv</a>
  &#8226;   <a href="#dataclasses">dataclasses</a>
@@ -62780,6 +62891,7 @@ imported by:
  &#8226;   <a href="#tomllib._re">tomllib._re</a>
  &#8226;   <a href="#typing">typing</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#ui.metric_discovery_page">ui.metric_discovery_page</a>
  &#8226;   <a href="#unittest.case">unittest.case</a>
  &#8226;   <a href="#unittest.loader">unittest.loader</a>
  &#8226;   <a href="#urllib.parse">urllib.parse</a>
@@ -68593,6 +68705,7 @@ imported by:
  &#8226;   <a href="#datetime">datetime</a>
  &#8226;   <a href="#dateutil.parser._parser">dateutil.parser._parser</a>
  &#8226;   <a href="#dateutil.tz.tz">dateutil.tz.tz</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#email._parseaddr">email._parseaddr</a>
  &#8226;   <a href="#email.generator">email.generator</a>
  &#8226;   <a href="#email.utils">email.utils</a>
@@ -69308,6 +69421,7 @@ imported by:
  &#8226;   <a href="#core.data_access">core.data_access</a>
  &#8226;   <a href="#core.executor">core.executor</a>
  &#8226;   <a href="#core.experience_payload">core.experience_payload</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
  &#8226;   <a href="#core.multi_file_resolver">core.multi_file_resolver</a>
  &#8226;   <a href="#core.preprocessor">core.preprocessor</a>
  &#8226;   <a href="#core.prompt_builder">core.prompt_builder</a>
@@ -69315,6 +69429,7 @@ imported by:
  &#8226;   <a href="#cycler">cycler</a>
  &#8226;   <a href="#dify.client">dify.client</a>
  &#8226;   <a href="#dify.experience_client">dify.experience_client</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
  &#8226;   <a href="#dify.workflow">dify.workflow</a>
  &#8226;   <a href="#dotenv">dotenv</a>
  &#8226;   <a href="#dotenv.main">dotenv.main</a>
@@ -70263,6 +70378,7 @@ imported by:
  &#8226;   <a href="#ui.floating_controls">ui.floating_controls</a>
  &#8226;   <a href="#ui.history_page">ui.history_page</a>
  &#8226;   <a href="#ui.main_window">ui.main_window</a>
+ &#8226;   <a href="#ui.metric_discovery_page">ui.metric_discovery_page</a>
  &#8226;   <a href="#ui.overview_popover">ui.overview_popover</a>
  &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
 
@@ -70439,6 +70555,7 @@ imports:
  &#8226;   <a href="#ui.experience_feedback">ui.experience_feedback</a>
  &#8226;   <a href="#ui.floating_controls">ui.floating_controls</a>
  &#8226;   <a href="#ui.history_page">ui.history_page</a>
+ &#8226;   <a href="#ui.metric_discovery_page">ui.metric_discovery_page</a>
  &#8226;   <a href="#ui.overview_popover">ui.overview_popover</a>
  &#8226;   <a href="#ui.result_panel">ui.result_panel</a>
  &#8226;   <a href="#workers.analysis_worker">workers.analysis_worker</a>
@@ -70446,12 +70563,38 @@ imports:
  &#8226;   <a href="#workers.experience_worker">workers.experience_worker</a>
  &#8226;   <a href="#workers.export_worker">workers.export_worker</a>
  &#8226;   <a href="#workers.import_worker">workers.import_worker</a>
+ &#8226;   <a href="#workers.metric_discovery_worker">workers.metric_discovery_worker</a>
 
   </div>
   <div class="import">
 imported by:
     <a href="#main.py">main.py</a>
  &#8226;   <a href="#ui">ui</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="ui.metric_discovery_page"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/ui/metric_discovery_page.py" type="text/plain"><tt>ui.metric_discovery_page</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#PySide6.QtCore">PySide6.QtCore</a>
+ &#8226;   <a href="#PySide6.QtGui">PySide6.QtGui</a>
+ &#8226;   <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
+ &#8226;   <a href="#__future__">__future__</a>
+ &#8226;   <a href="#config.settings">config.settings</a>
+ &#8226;   <a href="#core.metric_catalogs">core.metric_catalogs</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
+ &#8226;   <a href="#re">re</a>
+ &#8226;   <a href="#ui">ui</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#main.py">main.py</a>
+ &#8226;   <a href="#ui.main_window">ui.main_window</a>
 
   </div>
 
@@ -71029,6 +71172,7 @@ imported by:
     <a href="#_pytest._py.path">_pytest._py.path</a>
  &#8226;   <a href="#_pytest.pathlib">_pytest.pathlib</a>
  &#8226;   <a href="#core.experience_payload">core.experience_payload</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
  &#8226;   <a href="#matplotlib.backend_tools">matplotlib.backend_tools</a>
  &#8226;   <a href="#pandas.core.reshape.merge">pandas.core.reshape.merge</a>
  &#8226;   <a href="#pandas.io.formats.style_render">pandas.io.formats.style_render</a>
@@ -71546,6 +71690,7 @@ imported by:
  &#8226;   <a href="#workers.experience_worker">workers.experience_worker</a>
  &#8226;   <a href="#workers.export_worker">workers.export_worker</a>
  &#8226;   <a href="#workers.import_worker">workers.import_worker</a>
+ &#8226;   <a href="#workers.metric_discovery_worker">workers.metric_discovery_worker</a>
 
   </div>
 
@@ -71654,6 +71799,29 @@ imports:
   <div class="import">
 imported by:
     <a href="#ui.main_window">ui.main_window</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="workers.metric_discovery_worker"></a>
+  <a target="code" href="///C:/Users/iamin/Documents/Codex/2026-06-07/jjimmylin-ey-daclient-git-https-github/EY-DAClient/workers/metric_discovery_worker.py" type="text/plain"><tt>workers.metric_discovery_worker</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#PySide6.QtCore">PySide6.QtCore</a>
+ &#8226;   <a href="#__future__">__future__</a>
+ &#8226;   <a href="#core.metric_discovery">core.metric_discovery</a>
+ &#8226;   <a href="#dify.metric_client">dify.metric_client</a>
+ &#8226;   <a href="#llm.cancellation">llm.cancellation</a>
+ &#8226;   <a href="#logging">logging</a>
+ &#8226;   <a href="#workers">workers</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#main.py">main.py</a>
+ &#8226;   <a href="#ui.main_window">ui.main_window</a>
 
   </div>
 

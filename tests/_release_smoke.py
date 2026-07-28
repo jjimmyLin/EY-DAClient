@@ -6,6 +6,8 @@ import pandas as pd
 import pyarrow
 
 from core.data_access import LocalDataCatalog
+from core.metric_discovery import MetricDiscoveryRequest
+from dify.metric_client import MetricDifyClient
 
 
 with tempfile.TemporaryDirectory() as temp_dir:
@@ -38,3 +40,11 @@ with tempfile.TemporaryDirectory() as temp_dir:
     assert result.iloc[0]["total"] == 30
     assert duckdb.sql("SELECT 1").fetchone()[0] == 1
     assert pyarrow.__version__
+    metric_request = MetricDiscoveryRequest(
+        company_information={"company_name": "Smoke Test Co"},
+        indicator_guidance={"indicator_count": 5},
+    )
+    assert metric_request.to_payload()["schema_version"] == (
+        "metric_discovery.request.v1"
+    )
+    assert MetricDifyClient.PAYLOAD_VARIABLE == "request_payload"
