@@ -106,7 +106,7 @@ def test_company_resolution_client_sends_only_company_query(monkeypatch):
 
     assert result.resolution_status == "direct_match"
     assert captured["inputs"] == {"company_query": "示例公司"}
-    assert captured["response_mode"] == "blocking"
+    assert captured["response_mode"] == "streaming"
 
 
 def test_metric_request_preserves_query_and_selected_company():

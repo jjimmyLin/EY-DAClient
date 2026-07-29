@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import getpass
-import json
 import mimetypes
 import platform
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -18,6 +16,11 @@ from core.metric_discovery import (
     MetricDiscoveryContractError,
     MetricDiscoveryRequest,
     MetricDiscoveryResult,
+)
+from dify.reliable_workflow import (
+    ReliableWorkflowRunner,
+    RemoteRunHandle,
+    WorkflowTransportError,
 )
 from llm.cancellation import CancellationToken, RequestCancelled
 
@@ -53,6 +56,15 @@ class MetricDifyClient:
         self._max_retries = 3
         self._retry_delay = 1.0
         self._cancellation_token = cancellation_token or CancellationToken()
+        self._run_handle = RemoteRunHandle()
+        self._workflow_runner = ReliableWorkflowRunner(
+            base_url=self._base_url,
+            api_key=self._api_key,
+            timeout=self._timeout,
+            cancellation_token=self._cancellation_token,
+            transport=self._transport,
+            handle=self._run_handle,
+        )
 
     def generate(
         self,
@@ -322,215 +334,62 @@ class MetricDifyClient:
         event_callback: MetricEventCallback | None = None,
     ) -> dict[str, Any]:
         """Run once, consume SSE events, and recover without replaying the POST."""
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        }
-        url = f"{self._base_url}/workflows/run"
-        stream_state = {
-            "task_id": "",
-            "workflow_run_id": "",
-        }
-
-        self._cancellation_token.raise_if_cancelled()
         try:
-            with httpx.Client(
-                timeout=self._http_timeout(),
-                transport=self._transport,
-            ) as client:
-                self._cancellation_token.set_active_client(client)
-                try:
-                    with client.stream(
-                        "POST",
-                        url,
-                        headers=headers,
-                        json=payload,
-                    ) as response:
-                        if not response.is_success:
-                            response.read()
-                            raise MetricClientError(
-                                f"Dify indicator workflow error "
-                                f"{response.status_code}: "
-                                f"{response.text[:300]}",
-                                status_code=response.status_code,
-                            )
-                        result = self._collect_workflow_stream(
-                            response,
-                            stream_state=stream_state,
-                            event_callback=event_callback,
-                        )
-                finally:
-                    self._cancellation_token.clear_active_client(client)
-        except (httpx.TimeoutException, httpx.RequestError) as exc:
-            if self._cancellation_token.is_cancelled:
-                raise RequestCancelled("Request cancelled") from exc
-            result = None
-            if not stream_state["workflow_run_id"]:
-                if isinstance(exc, httpx.TimeoutException):
-                    raise MetricClientError(
-                        "The indicator workflow timed out.",
-                        status_code=408,
-                    ) from exc
-                raise MetricClientError(
-                    f"The indicator workflow stream was interrupted: {exc}."
-                ) from exc
-
-        self._cancellation_token.raise_if_cancelled()
-        if result is not None:
-            return result
-
-        workflow_run_id = stream_state["workflow_run_id"]
-        if not workflow_run_id:
-            raise MetricClientError(
-                "The indicator workflow stream ended before Dify returned "
-                "a workflow run ID."
-            )
-
-        self._emit(
-            event_callback,
-            "status",
-            "连接已中断，正在获取云端指标结果",
-        )
-        return self._poll_workflow_result(
-            workflow_run_id,
-            task_id=stream_state["task_id"],
-            deadline=time.monotonic() + self._timeout,
-        )
-
-    def _collect_workflow_stream(
-        self,
-        response: httpx.Response,
-        *,
-        stream_state: dict[str, str],
-        event_callback: MetricEventCallback | None = None,
-    ) -> dict[str, Any] | None:
-        """Collect Dify Workflow SSE events until workflow_finished."""
-        for raw_line in response.iter_lines():
-            self._cancellation_token.raise_if_cancelled()
-            line = raw_line.strip()
-            if not line or not line.startswith("data:"):
-                continue
-
-            payload_text = line[5:].strip()
-            if not payload_text:
-                continue
-            try:
-                chunk = json.loads(payload_text)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(chunk, dict):
-                continue
-
-            event = str(chunk.get("event") or "")
-            data = chunk.get("data") or {}
-            if not isinstance(data, dict):
-                data = {}
-
-            task_id = str(chunk.get("task_id") or "").strip()
-            if task_id:
-                stream_state["task_id"] = task_id
-
-            workflow_run_id = str(
-                chunk.get("workflow_run_id")
-                or (
-                    data.get("id")
-                    if event == "workflow_started"
-                    else ""
-                )
-                or ""
-            ).strip()
-            if workflow_run_id:
-                stream_state["workflow_run_id"] = workflow_run_id
-
-            if event == "workflow_started":
-                self._emit(
+            return self._workflow_runner.run(
+                payload,
+                event_callback=lambda event: self._handle_reliable_event(
+                    event,
                     event_callback,
-                    "status",
-                    "云端指标工作流已启动",
-                )
-                continue
+                ),
+            )
+        except WorkflowTransportError as exc:
+            raise MetricClientError(
+                str(exc),
+                status_code=exc.status_code,
+            ) from exc
 
-            if event == "node_started":
-                title = str(data.get("title") or "").strip()
-                if title:
-                    self._emit(
-                        event_callback,
-                        "status",
-                        f"正在执行：{title}",
-                    )
-                continue
+    def cancel_remote(self) -> bool:
+        """Best-effort cancellation for a Dify task whose task ID is known."""
+        return self._workflow_runner.stop_remote()
 
-            if event == "node_finished":
-                if str(data.get("status") or "").lower() == "failed":
-                    raise MetricClientError(
-                        str(data.get("error") or "Workflow node failed"),
-                        status_code=400,
-                    )
-                continue
-
-            if event == "workflow_finished":
-                workflow_run_id = str(
-                    stream_state["workflow_run_id"]
-                    or data.get("id")
-                    or ""
-                )
-                return {
-                    "workflow_run_id": workflow_run_id,
-                    "task_id": stream_state["task_id"],
-                    "data": dict(data),
-                }
-
-        return None
-
-    def _poll_workflow_result(
+    def _handle_reliable_event(
         self,
-        workflow_run_id: str,
-        *,
-        task_id: str,
-        deadline: float,
-    ) -> dict[str, Any]:
-        """Recover a started workflow by querying its run instead of replaying it."""
-        terminal_statuses = {
-            "succeeded",
-            "failed",
-            "stopped",
-            "partial-succeeded",
-            "paused",
+        event_payload: dict[str, Any],
+        callback: MetricEventCallback | None,
+    ) -> None:
+        event = str(event_payload.get("event") or "")
+        data = event_payload.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        remote = {
+            "task_id": str(event_payload.get("task_id") or ""),
+            "workflow_run_id": str(
+                event_payload.get("workflow_run_id") or ""
+            ),
         }
-        transient_statuses = {404, 429, 500, 502, 503, 504}
-
-        while time.monotonic() < deadline:
-            self._cancellation_token.raise_if_cancelled()
-            try:
-                detail = self._request_json(
-                    "GET",
-                    f"workflows/run/{workflow_run_id}",
-                    retryable=False,
+        if event == "workflow_started":
+            self._emit(
+                callback,
+                "status",
+                "云端指标工作流已启动",
+                **remote,
+            )
+        elif event == "node_started":
+            title = str(data.get("title") or "").strip()
+            if title:
+                self._emit(
+                    callback,
+                    "status",
+                    "正在执行：" + title,
+                    **remote,
                 )
-            except MetricClientError as exc:
-                if exc.status_code not in transient_statuses:
-                    raise
-                self._cancellation_token.wait(1.0)
-                continue
-
-            status = str(detail.get("status") or "").strip().lower()
-            if status in terminal_statuses:
-                return {
-                    "workflow_run_id": str(
-                        detail.get("id") or workflow_run_id
-                    ),
-                    "task_id": task_id,
-                    "data": detail,
-                }
-
-            self._cancellation_token.wait(1.0)
-
-        raise MetricClientError(
-            "The indicator workflow timed out while waiting for the cloud "
-            "result.",
-            status_code=408,
-        )
+        elif event == "client_reconnecting":
+            self._emit(
+                callback,
+                "status",
+                "连接已中断，正在恢复云端指标任务",
+                **remote,
+            )
 
     def _http_timeout(self) -> httpx.Timeout:
         return httpx.Timeout(

@@ -69,6 +69,8 @@ from ui.company_selection_dialog import CompanySelectionDialog
 from ui.metric_discovery_page import MetricDiscoveryPage
 from core.analysis_result import AnalysisResult
 from core.experience_payload import new_analysis_run_id, new_analysis_session_id
+from core.resume_monitor import ResumeMonitor
+from core.task_supervisor import TaskSupervisor
 from config.settings import settings
 from services.experience_service import ExperienceService
 from workers.analysis_worker import AnalysisWorker
@@ -307,6 +309,10 @@ class MainWindow(QMainWindow):
         self._metric_worker = None
         self._company_resolution_thread = None
         self._company_resolution_worker = None
+        self._metric_tasks = TaskSupervisor("metric-discovery")
+        self._company_resolution_tasks = TaskSupervisor("company-resolution")
+        self._analysis_tasks = TaskSupervisor("analysis")
+        self._metric_pipeline_generation = 0
         self._pending_metric_request = None
         self._experience_submissions = ExperienceSubmissionQueue(self)
         self._experience_submissions.submitted.connect(
@@ -328,6 +334,8 @@ class MainWindow(QMainWindow):
         self._generated_code = ""
         self._analysis_plan = {}
         self._current_analysis_result = None
+        self._resume_monitor = ResumeMonitor(self)
+        self._resume_monitor.resumed.connect(self._on_system_resumed)
         self._refresh_result_export_state()
         self._verified_code = ""
         self._verified_execution = None
@@ -678,6 +686,12 @@ class MainWindow(QMainWindow):
         self.activity_progress.setTextVisible(False)
         self.activity_progress.setFixedHeight(4)
         self.activity_progress.setProperty("busyPulse", 0.0)
+        self.analysis_cancel_btn = QPushButton("Cancel")
+        self.analysis_cancel_btn.setObjectName("activityCancelButton")
+        self.analysis_cancel_btn.setCursor(Qt.PointingHandCursor)
+        self.analysis_cancel_btn.setAccessibleName("Cancel analysis")
+        self.analysis_cancel_btn.setToolTip("Cancel the current analysis")
+        self.analysis_cancel_btn.clicked.connect(self._cancel_analysis)
         activity_shadow = QGraphicsDropShadowEffect(self)
         activity_shadow.setBlurRadius(14)
         activity_shadow.setOffset(0, 0)
@@ -686,6 +700,7 @@ class MainWindow(QMainWindow):
         self._activity_shadow = activity_shadow
         activity_layout.addWidget(self.activity_label)
         activity_layout.addWidget(self.activity_progress, stretch=1)
+        activity_layout.addWidget(self.analysis_cancel_btn)
         self.activity_strip.setVisible(False)
 
         canvas_layout.addWidget(self.activity_strip)
@@ -1011,10 +1026,11 @@ class MainWindow(QMainWindow):
 
     def _start_metric_discovery(self, request) -> None:
         if (
-            self._metric_thread is not None
-            or self._company_resolution_thread is not None
+            self._metric_tasks.active_runtime is not None
+            or self._company_resolution_tasks.active_runtime is not None
         ):
-            return
+            self._retire_metric_pipeline(superseded=True)
+        self._metric_pipeline_generation += 1
         company_name = str(
             request.company_information.get("company_name") or ""
         ).strip()
@@ -1038,25 +1054,70 @@ class MainWindow(QMainWindow):
         self._launch_metric_worker(request)
 
     def _start_company_resolution(self, company_name: str) -> None:
+        pipeline_generation = self._metric_pipeline_generation
         thread = QThread(self)
         worker = CompanyResolutionWorker(company_name)
         worker.moveToThread(thread)
+        runtime = self._company_resolution_tasks.activate(thread, worker)
+        generation = runtime.generation
         thread.started.connect(worker.run)
-        worker.event.connect(self.metric_page.handle_event)
-        worker.finished.connect(self._on_company_resolution_finished)
-        worker.error.connect(self._on_company_resolution_failed)
-        worker.cancelled.connect(self._on_company_resolution_cancelled)
+        worker.event.connect(
+            lambda event, current=generation: (
+                self.metric_page.handle_event(event)
+                if self._company_resolution_tasks.is_active(current)
+                else None
+            )
+        )
+        worker.finished.connect(
+            lambda result, current=generation: (
+                self._on_company_resolution_finished(
+                    result,
+                    pipeline_generation,
+                )
+                if self._company_resolution_tasks.is_active(current)
+                else None
+            )
+        )
+        worker.error.connect(
+            lambda error, current=generation: (
+                self._on_company_resolution_failed(
+                    error,
+                    pipeline_generation,
+                )
+                if self._company_resolution_tasks.is_active(current)
+                else None
+            )
+        )
+        worker.cancelled.connect(
+            lambda current=generation: (
+                self._on_company_resolution_cancelled()
+                if self._company_resolution_tasks.is_active(current)
+                else None
+            )
+        )
         worker.finished.connect(thread.quit)
         worker.error.connect(thread.quit)
         worker.cancelled.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_company_resolution)
+        thread.finished.connect(
+            lambda current=generation: self._cleanup_company_resolution(
+                current
+            )
+        )
         self._company_resolution_thread = thread
         self._company_resolution_worker = worker
         thread.start()
 
-    def _on_company_resolution_finished(self, result) -> None:
+    def _on_company_resolution_finished(
+        self,
+        result,
+        pipeline_generation: int | None = None,
+    ) -> None:
+        if pipeline_generation is None:
+            pipeline_generation = self._metric_pipeline_generation
+        if pipeline_generation != self._metric_pipeline_generation:
+            return
         request = self._pending_metric_request
         if request is None:
             return
@@ -1114,12 +1175,23 @@ class MainWindow(QMainWindow):
         self._pending_metric_request = None
         QTimer.singleShot(
             0,
-            lambda pending_request=request: self._launch_metric_worker(
-                pending_request
+            lambda pending_request=request, current=pipeline_generation: (
+                self._launch_metric_request_if_current(
+                    pending_request,
+                    current,
+                )
             ),
         )
 
-    def _on_company_resolution_failed(self, error: str) -> None:
+    def _on_company_resolution_failed(
+        self,
+        error: str,
+        pipeline_generation: int | None = None,
+    ) -> None:
+        if pipeline_generation is None:
+            pipeline_generation = self._metric_pipeline_generation
+        if pipeline_generation != self._metric_pipeline_generation:
+            return
         request = self._pending_metric_request
         self._pending_metric_request = None
         self.log_output.append(
@@ -1137,34 +1209,78 @@ class MainWindow(QMainWindow):
         )
         QTimer.singleShot(
             0,
-            lambda pending_request=request: self._launch_metric_worker(
-                pending_request
+            lambda pending_request=request, current=pipeline_generation: (
+                self._launch_metric_request_if_current(
+                    pending_request,
+                    current,
+                )
             ),
         )
+
+    def _launch_metric_request_if_current(
+        self,
+        request,
+        pipeline_generation: int,
+    ) -> None:
+        if pipeline_generation != self._metric_pipeline_generation:
+            return
+        self._launch_metric_worker(request)
 
     def _on_company_resolution_cancelled(self) -> None:
         self._pending_metric_request = None
         self.metric_page.show_error("Request cancelled")
 
-    def _cleanup_company_resolution(self) -> None:
-        self._company_resolution_thread = None
-        self._company_resolution_worker = None
+    def _cleanup_company_resolution(
+        self,
+        generation: int | None = None,
+    ) -> None:
+        if generation is None:
+            generation = self._company_resolution_tasks.active_generation
+        if generation is None:
+            return
+        if self._company_resolution_tasks.finish(generation):
+            self._company_resolution_thread = None
+            self._company_resolution_worker = None
 
     def _launch_metric_worker(self, request) -> None:
-        if self._metric_thread is not None:
-            return
+        if self._metric_tasks.active_runtime is not None:
+            self._retire_metric_pipeline(superseded=True)
         thread = QThread(self)
         worker = MetricDiscoveryWorker(request)
         worker.moveToThread(thread)
+        runtime = self._metric_tasks.activate(thread, worker)
+        generation = runtime.generation
         thread.started.connect(worker.run)
-        worker.event.connect(self.metric_page.handle_event)
-        worker.finished.connect(self._on_metric_discovery_finished)
-        worker.error.connect(self._on_metric_discovery_failed)
+        worker.event.connect(
+            lambda event, current=generation: (
+                self.metric_page.handle_event(event)
+                if self._metric_tasks.is_active(current)
+                else None
+            )
+        )
+        worker.finished.connect(
+            lambda result, current=generation: (
+                self._on_metric_discovery_finished(result)
+                if self._metric_tasks.is_active(current)
+                else None
+            )
+        )
+        worker.error.connect(
+            lambda error, current=generation: (
+                self._on_metric_discovery_failed(error)
+                if self._metric_tasks.is_active(current)
+                else None
+            )
+        )
         worker.finished.connect(thread.quit)
         worker.error.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_metric_discovery)
+        thread.finished.connect(
+            lambda current=generation: self._cleanup_metric_discovery(
+                current
+            )
+        )
         self._metric_thread = thread
         self._metric_worker = worker
         thread.start()
@@ -1181,19 +1297,48 @@ class MainWindow(QMainWindow):
         self.log_output.append(f"Business indicator generation failed: {error}")
 
     def _cancel_metric_discovery(self) -> None:
-        if self._metric_worker is not None:
-            self._metric_worker.cancel()
-            self.metric_page.cancel_button.setEnabled(False)
-            self.metric_page.busy_label.setText("正在取消本次生成")
-            return
-        if self._company_resolution_worker is not None:
-            self._company_resolution_worker.cancel()
-            self.metric_page.cancel_button.setEnabled(False)
-            self.metric_page.busy_label.setText("正在取消本次生成")
+        retired = self._retire_metric_pipeline(superseded=False)
+        if retired:
+            self.metric_page.show_error("Request cancelled")
 
-    def _cleanup_metric_discovery(self) -> None:
-        self._metric_thread = None
-        self._metric_worker = None
+    def _retire_metric_pipeline(self, *, superseded: bool) -> bool:
+        self._metric_pipeline_generation += 1
+        retired = False
+        metric_runtime = self._metric_tasks.retire_active(
+            superseded=superseded
+        )
+        if metric_runtime is not None:
+            retired = True
+            metric_runtime.worker.cancel()
+            if metric_runtime.thread.isRunning():
+                metric_runtime.thread.quit()
+            self._metric_thread = None
+            self._metric_worker = None
+
+        resolution_runtime = self._company_resolution_tasks.retire_active(
+            superseded=superseded
+        )
+        if resolution_runtime is not None:
+            retired = True
+            resolution_runtime.worker.cancel()
+            if resolution_runtime.thread.isRunning():
+                resolution_runtime.thread.quit()
+            self._company_resolution_thread = None
+            self._company_resolution_worker = None
+        self._pending_metric_request = None
+        return retired
+
+    def _cleanup_metric_discovery(
+        self,
+        generation: int | None = None,
+    ) -> None:
+        if generation is None:
+            generation = self._metric_tasks.active_generation
+        if generation is None:
+            return
+        if self._metric_tasks.finish(generation):
+            self._metric_thread = None
+            self._metric_worker = None
 
     def _toggle_context_panel(self) -> None:
         if self._context_panel_open:
@@ -2555,8 +2700,43 @@ class MainWindow(QMainWindow):
             thread.quit()
             thread.wait(3000)
 
+    def _on_system_resumed(self, gap_seconds: float) -> None:
+        """Discard pre-suspend connections and immediately release the UI."""
+        logger.info(
+            "Application resumed after %.1fs; invalidating active tasks",
+            gap_seconds,
+        )
+        metric_retired = self._retire_metric_pipeline(superseded=True)
+        analysis_retired = self._retire_analysis_task(superseded=True)
+        if metric_retired:
+            self.metric_page.show_error(
+                "The computer resumed from sleep. The previous connection "
+                "was retired; you can start a new indicator analysis."
+            )
+        if analysis_retired:
+            self._append_system_event(
+                "The previous analysis connection was retired after system resume."
+            )
+            self._update_history_task(
+                "Interrupted",
+                finished=True,
+                result="Interrupted while the computer was suspended.",
+                error="",
+            )
+        settings.reload()
+
     def closeEvent(self, event) -> None:
         self._experience_submissions.shutdown()
+        for supervisor in (
+            self._company_resolution_tasks,
+            self._metric_tasks,
+            self._analysis_tasks,
+        ):
+            supervisor.cancel_all()
+            for runtime in supervisor.all_runtimes():
+                if runtime.thread.isRunning():
+                    runtime.thread.quit()
+                    runtime.thread.wait(3000)
         if self._company_resolution_worker is not None:
             self._company_resolution_worker.cancel()
         if (
@@ -2897,8 +3077,8 @@ class MainWindow(QMainWindow):
         code: str = "",
         analysis_plan: dict | None = None,
     ) -> None:
-        if self._analysis_thread is not None:
-            return
+        if self._analysis_tasks.active_runtime is not None:
+            self._retire_analysis_task(superseded=True)
 
         self._active_worker_mode = mode
         self._set_busy(True)
@@ -2912,17 +3092,39 @@ class MainWindow(QMainWindow):
             analysis_plan=analysis_plan,
         )
         worker.moveToThread(thread)
+        runtime = self._analysis_tasks.activate(thread, worker)
+        generation = runtime.generation
 
         thread.started.connect(worker.run)
-        worker.event.connect(self._on_worker_event)
-        worker.finished.connect(self._on_worker_finished)
-        worker.error.connect(self._on_worker_error)
+        worker.event.connect(
+            lambda event, current=generation: (
+                self._on_worker_event(event)
+                if self._analysis_tasks.is_active(current)
+                else None
+            )
+        )
+        worker.finished.connect(
+            lambda result, current=generation: (
+                self._on_worker_finished(result)
+                if self._analysis_tasks.is_active(current)
+                else None
+            )
+        )
+        worker.error.connect(
+            lambda error, current=generation: (
+                self._on_worker_error(error)
+                if self._analysis_tasks.is_active(current)
+                else None
+            )
+        )
         worker.finished.connect(thread.quit)
         worker.error.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         worker.error.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_worker)
+        thread.finished.connect(
+            lambda current=generation: self._cleanup_worker(current)
+        )
 
         self._analysis_thread = thread
         self._analysis_worker = worker
@@ -3384,7 +3586,42 @@ class MainWindow(QMainWindow):
         self._render_transcript()
         self._set_busy(False)
 
-    def _cleanup_worker(self) -> None:
+    def _cancel_analysis(self) -> None:
+        if not self._retire_analysis_task(superseded=False):
+            return
+        self._append_system_event("Analysis cancelled")
+        self.log_output.append("Analysis cancellation requested.")
+        self._update_history_task(
+            "Cancelled",
+            finished=True,
+            result="Analysis cancelled.",
+            error="",
+        )
+
+    def _retire_analysis_task(self, *, superseded: bool) -> bool:
+        runtime = self._analysis_tasks.retire_active(
+            superseded=superseded
+        )
+        if runtime is None:
+            return False
+        runtime.worker.cancel()
+        if runtime.thread.isRunning():
+            runtime.thread.quit()
+        self._analysis_thread = None
+        self._analysis_worker = None
+        self._active_worker_mode = ""
+        self._background_execute_pending = False
+        self._set_busy(False)
+        return True
+
+    def _cleanup_worker(self, generation: int | None = None) -> None:
+        if generation is None:
+            generation = self._analysis_tasks.active_generation
+        if generation is None:
+            return
+        was_active = self._analysis_tasks.finish(generation)
+        if not was_active:
+            return
         self._analysis_thread = None
         self._analysis_worker = None
         self._active_worker_mode = ""
@@ -4208,6 +4445,21 @@ class MainWindow(QMainWindow):
             QProgressBar#activityProgress::chunk {
                 background-color: #1A73E8;
                 border-radius: 2px;
+            }
+
+            QPushButton#activityCancelButton {
+                background-color: transparent;
+                color: #B3261E;
+                border: 1px solid #F0C8C5;
+                border-radius: 5px;
+                padding: 3px 9px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+
+            QPushButton#activityCancelButton:hover {
+                background-color: #FCE8E6;
+                border-color: #E6A6A1;
             }
 
             QPushButton#suggestionTriggerBtn {

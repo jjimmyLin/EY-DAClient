@@ -14,7 +14,12 @@ from core.company_resolution import (
     CompanyResolutionContractError,
     CompanyResolutionResult,
 )
-from llm.cancellation import CancellationToken, RequestCancelled
+from dify.reliable_workflow import (
+    ReliableWorkflowRunner,
+    RemoteRunHandle,
+    WorkflowTransportError,
+)
+from llm.cancellation import CancellationToken
 
 
 CompanyResolutionEventCallback = Callable[[dict[str, object]], None]
@@ -45,6 +50,15 @@ class CompanyResolutionDifyClient:
         self._timeout = settings.DIFY_COMPANY_RESOLUTION_TIMEOUT
         self._transport = transport
         self._cancellation_token = cancellation_token or CancellationToken()
+        self._run_handle = RemoteRunHandle()
+        self._workflow_runner = ReliableWorkflowRunner(
+            base_url=self._base_url,
+            api_key=self._api_key,
+            timeout=self._timeout,
+            cancellation_token=self._cancellation_token,
+            transport=self._transport,
+            handle=self._run_handle,
+        )
 
     def resolve(
         self,
@@ -64,10 +78,13 @@ class CompanyResolutionDifyClient:
         self._emit(event_callback, "status", "正在确认工商主体")
         payload = {
             "inputs": {self.QUERY_VARIABLE: query},
-            "response_mode": "blocking",
+            "response_mode": "streaming",
             "user": self._build_user_id(),
         }
-        response = self._request(payload)
+        response = self._request(
+            payload,
+            event_callback=event_callback,
+        )
         try:
             result = CompanyResolutionResult.from_workflow_response(response)
         except CompanyResolutionContractError as exc:
@@ -78,67 +95,50 @@ class CompanyResolutionDifyClient:
         self._emit(event_callback, "status", "工商主体判定完成")
         return result
 
-    def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
-        url = f"{self._base_url}/workflows/run"
-        self._cancellation_token.raise_if_cancelled()
+    def _request(
+        self,
+        payload: dict[str, Any],
+        *,
+        event_callback: CompanyResolutionEventCallback | None = None,
+    ) -> dict[str, Any]:
         try:
-            with httpx.Client(
-                timeout=self._http_timeout(),
-                transport=self._transport,
-            ) as client:
-                self._cancellation_token.set_active_client(client)
-                try:
-                    response = client.post(
-                        url,
-                        headers=headers,
-                        json=payload,
-                    )
-                finally:
-                    self._cancellation_token.clear_active_client(client)
-        except httpx.TimeoutException as exc:
-            if self._cancellation_token.is_cancelled:
-                raise RequestCancelled("Request cancelled") from exc
+            return self._workflow_runner.run(
+                payload,
+                event_callback=lambda event: self._handle_workflow_event(
+                    event,
+                    event_callback,
+                ),
+            )
+        except WorkflowTransportError as exc:
             raise CompanyResolutionClientError(
-                "The company-resolution workflow timed out.",
-                status_code=408,
-            ) from exc
-        except httpx.RequestError as exc:
-            if self._cancellation_token.is_cancelled:
-                raise RequestCancelled("Request cancelled") from exc
-            raise CompanyResolutionClientError(
-                f"The company-resolution workflow is unavailable: {exc}."
+                str(exc),
+                status_code=exc.status_code,
             ) from exc
 
-        self._cancellation_token.raise_if_cancelled()
-        if not response.is_success:
-            raise CompanyResolutionClientError(
-                f"Dify company-resolution workflow error "
-                f"{response.status_code}: {response.text[:300]}",
-                status_code=response.status_code,
-            )
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise CompanyResolutionClientError(
-                "The company-resolution workflow returned invalid JSON."
-            ) from exc
-        if not isinstance(body, dict):
-            raise CompanyResolutionClientError(
-                "The company-resolution workflow returned an invalid response."
-            )
-        return body
+    def cancel_remote(self) -> bool:
+        return self._workflow_runner.stop_remote()
 
-    def _http_timeout(self) -> httpx.Timeout:
-        return httpx.Timeout(
-            connect=min(20, self._timeout),
-            read=self._timeout,
-            write=min(30, self._timeout),
-            pool=min(20, self._timeout),
-        )
+    def _handle_workflow_event(
+        self,
+        event_payload: dict[str, Any],
+        callback: CompanyResolutionEventCallback | None,
+    ) -> None:
+        event = str(event_payload.get("event") or "")
+        data = event_payload.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        if event == "workflow_started":
+            self._emit(callback, "status", "Company resolution started")
+        elif event == "node_started":
+            title = str(data.get("title") or "").strip()
+            if title:
+                self._emit(callback, "status", f"Running: {title}")
+        elif event == "client_reconnecting":
+            self._emit(
+                callback,
+                "status",
+                "Recovering the company-resolution workflow",
+            )
 
     @staticmethod
     def _build_user_id() -> str:

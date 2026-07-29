@@ -305,6 +305,7 @@ class AnalysisWorkflow:
             files_meta,
             sample=sample,
             analysis_plan=analysis_plan,
+            cancellation_token=self._cancellation_token,
         )
         self._emit(
             event_callback,

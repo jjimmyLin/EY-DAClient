@@ -14,6 +14,11 @@ from typing import Any
 import httpx
 
 from config.settings import settings
+from dify.reliable_workflow import (
+    ReliableWorkflowRunner,
+    RemoteRunHandle,
+    WorkflowTransportError,
+)
 from llm import LLMError
 from llm.cancellation import CancellationToken, RequestCancelled
 
@@ -45,6 +50,14 @@ class DifyClient:
         self._max_retries = 3
         self._retry_delay = 1
         self._cancellation_token = cancellation_token or CancellationToken()
+        self._run_handle = RemoteRunHandle()
+        self._workflow_runner = ReliableWorkflowRunner(
+            base_url=self._base_url,
+            api_key=self._api_key,
+            timeout=self._timeout,
+            cancellation_token=self._cancellation_token,
+            handle=self._run_handle,
+        )
 
     def generate_code(
         self,
@@ -126,7 +139,27 @@ class DifyClient:
                 self._cancellation_token.raise_if_cancelled()
 
                 if response.is_success:
-                    return response.json()
+                    try:
+                        body = response.json()
+                    except ValueError as exc:
+                        raise DifyClientError(
+                            502,
+                            "Dify returned invalid JSON.",
+                        ) from exc
+                    if not isinstance(body, dict):
+                        raise DifyClientError(
+                            502,
+                            "Dify returned an invalid response.",
+                        )
+                    return body
+                if (
+                    response.status_code in {429, 500, 502, 503, 504}
+                    and attempt < self._max_retries - 1
+                ):
+                    self._cancellation_token.wait(
+                        self._retry_delay * (attempt + 1)
+                    )
+                    continue
                 raise DifyClientError(response.status_code, response.text)
             except httpx.TimeoutException:
                 if self._cancellation_token.is_cancelled:
@@ -148,140 +181,52 @@ class DifyClient:
         payload: dict,
         event_callback: EventCallback | None = None,
     ) -> dict:
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
-        url = f"{self._base_url}/workflows/run"
-        timeout = httpx.Timeout(
-            connect=self._timeout,
-            read=self._timeout,
-            write=self._timeout,
-            pool=self._timeout,
-        )
+        """Start a workflow once and recover the same run after stream loss."""
+        try:
+            return self._workflow_runner.run(
+                payload,
+                event_callback=lambda event: self._handle_reliable_event(
+                    event,
+                    event_callback,
+                ),
+            )
+        except WorkflowTransportError as exc:
+            raise DifyClientError(exc.status_code, str(exc)) from exc
 
-        for attempt in range(self._max_retries):
-            self._cancellation_token.raise_if_cancelled()
-            try:
-                with httpx.Client(timeout=timeout) as client:
-                    self._cancellation_token.set_active_client(client)
-                    try:
-                        with client.stream(
-                            "POST",
-                            url,
-                            headers=headers,
-                            json=payload,
-                        ) as response:
-                            if not response.is_success:
-                                response.read()
-                                raise DifyClientError(
-                                    response.status_code,
-                                    response.text,
-                                )
+    def cancel_remote(self) -> bool:
+        return self._workflow_runner.stop_remote()
 
-                            return self._collect_stream(response, event_callback)
-                    finally:
-                        self._cancellation_token.clear_active_client(client)
-            except httpx.TimeoutException:
-                if self._cancellation_token.is_cancelled:
-                    raise RequestCancelled("Request cancelled")
-                if attempt < self._max_retries - 1:
-                    self._cancellation_token.wait(self._retry_delay)
-                    continue
-                raise DifyClientError(408, "Request timed out")
-            except httpx.RequestError as exc:
-                if self._cancellation_token.is_cancelled:
-                    raise RequestCancelled("Request cancelled") from exc
-                if attempt < self._max_retries - 1:
-                    self._cancellation_token.wait(self._retry_delay)
-                    continue
-                raise DifyClientError(0, str(exc))
-
-        raise DifyClientError(0, "Unknown Dify streaming error")
-
-    def _collect_stream(
+    def _handle_reliable_event(
         self,
-        response: httpx.Response,
-        event_callback: EventCallback | None = None,
-    ) -> dict:
-        text_chunks: list[str] = []
-        workflow_data: dict[str, Any] | None = None
-        task_id = ""
-        workflow_run_id = ""
-
-        for raw_line in response.iter_lines():
-            self._cancellation_token.raise_if_cancelled()
-            line = raw_line.strip()
-            if not line or not line.startswith("data:"):
-                continue
-
-            payload_text = line[5:].strip()
-            if not payload_text:
-                continue
-
-            try:
-                chunk = json.loads(payload_text)
-            except json.JSONDecodeError:
-                continue
-
-            event = str(chunk.get("event", ""))
-            task_id = str(chunk.get("task_id", task_id))
-            workflow_run_id = str(chunk.get("workflow_run_id", workflow_run_id))
-            data = chunk.get("data") or {}
-
-            if event == "workflow_started":
-                self._emit(event_callback, "status", "Dify workflow started")
-                continue
-
-            if event == "node_started":
-                title = str(data.get("title", ""))
-                if title:
-                    self._emit(event_callback, "status", f"Running node: {title}")
-                continue
-
-            if event == "text_chunk":
-                text = str(data.get("text", ""))
-                if text:
-                    text_chunks.append(text)
-                    self._emit(
-                        event_callback,
-                        "content_delta",
-                        "Dify text chunk received",
-                        delta=text,
-                        section="code",
-                    )
-                continue
-
-            if event == "node_finished":
-                if str(data.get("status", "")).lower() == "failed":
-                    error = str(data.get("error", "Workflow node failed"))
-                    raise DifyClientError(400, error)
-                continue
-
-            if event == "workflow_finished":
-                workflow_data = dict(data)
-                break
-
-        if workflow_data is None:
-            raise DifyClientError(400, "No workflow_finished event received from Dify")
-
-        status = str(workflow_data.get("status", "")).lower()
-        if status and status != "succeeded":
-            error = str(workflow_data.get("error", "Workflow execution failed"))
-            raise DifyClientError(400, error)
-
-        outputs = workflow_data.get("outputs")
-        if not outputs and text_chunks:
-            outputs = {"text": "".join(text_chunks)}
-        elif isinstance(outputs, str):
-            outputs = {"text": outputs}
-
-        workflow_data["outputs"] = outputs or {}
-        return {
-            "workflow_run_id": workflow_run_id,
-            "task_id": task_id,
-            "data": workflow_data,
-        }
+        event_payload: dict[str, Any],
+        callback: EventCallback | None,
+    ) -> None:
+        event = str(event_payload.get("event") or "")
+        data = event_payload.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        if event == "workflow_started":
+            self._emit(callback, "status", "Dify workflow started")
+        elif event == "node_started":
+            title = str(data.get("title") or "")
+            if title:
+                self._emit(callback, "status", f"Running node: {title}")
+        elif event == "text_chunk":
+            text = str(data.get("text") or "")
+            if text:
+                self._emit(
+                    callback,
+                    "content_delta",
+                    "Dify text chunk received",
+                    delta=text,
+                    section="code",
+                )
+        elif event == "client_reconnecting":
+            self._emit(
+                callback,
+                "status",
+                "Dify connection interrupted; recovering the existing run",
+            )
 
     def _build_inputs(self, prompt: dict, parameters: dict) -> dict[str, str]:
         fields = self._extract_input_fields(parameters)

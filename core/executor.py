@@ -18,6 +18,7 @@ import psutil
 from config.settings import settings
 from core.analysis_result import AnalysisResult, AnswerResult, InsightResult
 from core.preprocessor import FileMeta
+from llm.cancellation import CancellationToken, RequestCancelled
 
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,10 @@ class Executor:
         *,
         sample: bool = False,
         analysis_plan: dict[str, Any] | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> ExecutionResult:
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "analysis.py"
             result_path = Path(temp_dir) / "analysis_result.json"
@@ -78,6 +82,7 @@ class Executor:
                 str(script_path),
                 timeout,
                 memory_limit,
+                cancellation_token=cancellation_token,
             )
             execution.preflight_only = sample
             execution.analysis_result = self._load_analysis_result(
@@ -199,7 +204,11 @@ class Executor:
         script_path: str,
         timeout: int,
         memory_limit_mb: int,
+        *,
+        cancellation_token: CancellationToken | None = None,
     ) -> ExecutionResult:
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
         if getattr(sys, "frozen", False):
             command = [sys.executable, "--run-script", script_path]
         else:
@@ -217,13 +226,20 @@ class Executor:
         peak_memory = 0.0
         timed_out = False
         memory_exceeded = False
+        stdout = ""
+        stderr = ""
         try:
             monitored = psutil.Process(process.pid)
-            while process.poll() is None:
+            while True:
+                if cancellation_token is not None:
+                    if cancellation_token.is_cancelled:
+                        self._kill_process_tree(monitored, process)
+                        stdout, stderr = process.communicate()
+                        raise RequestCancelled("Request cancelled")
                 elapsed = time.monotonic() - started
                 if elapsed > timeout:
                     timed_out = True
-                    process.kill()
+                    self._kill_process_tree(monitored, process)
                     break
                 try:
                     memory = monitored.memory_info().rss
@@ -232,14 +248,25 @@ class Executor:
                     peak_memory = max(peak_memory, memory / (1024 * 1024))
                     if peak_memory > memory_limit_mb:
                         memory_exceeded = True
-                        process.kill()
+                        self._kill_process_tree(monitored, process)
                         break
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
-                time.sleep(0.05)
-            stdout, stderr = process.communicate()
+                try:
+                    stdout, stderr = process.communicate(timeout=0.05)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            if timed_out or memory_exceeded:
+                stdout, stderr = process.communicate()
+        except RequestCancelled:
+            raise
         except Exception as exc:
-            process.kill()
+            try:
+                monitored = psutil.Process(process.pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                monitored = None
+            self._kill_process_tree(monitored, process)
             stdout, stderr = process.communicate()
             stderr = f"{stderr}\nExecution monitor error: {exc}".strip()
             logger.exception("Execution monitor failed")
@@ -269,6 +296,26 @@ class Executor:
             timed_out=timed_out,
             peak_memory_mb=round(peak_memory, 2),
         )
+
+    @staticmethod
+    def _kill_process_tree(
+        monitored: psutil.Process | None,
+        process: subprocess.Popen,
+    ) -> None:
+        if monitored is not None:
+            try:
+                for child in monitored.children(recursive=True):
+                    try:
+                        child.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        if process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
 
     @staticmethod
     def _load_analysis_result(
