@@ -4,7 +4,17 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import (
+    QElapsedTimer,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QColor,
     QDragEnterEvent,
@@ -21,7 +31,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
-    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -29,6 +38,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -56,6 +66,7 @@ from core.metric_discovery import (
     ReferenceAttachment,
     SUPPORTED_REFERENCE_SUFFIXES,
 )
+from core.company_resolution import CompanyCandidate
 
 
 class FlowLayout(QLayout):
@@ -597,14 +608,13 @@ class MultiSelectPopup(QDialog):
         self._category_buttons: dict[str, HoverCategoryButton] = {}
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 10, 10, 12)
+        # A graphics shadow on a translucent Qt.Popup is clipped by the native
+        # popup window on some Windows scale factors, leaving a dark bar on the
+        # right and bottom edges.  The panel border gives a cleaner, stable
+        # boundary without relying on an effect outside the popup's geometry.
+        outer.setContentsMargins(3, 3, 3, 3)
         self.panel = QFrame()
         self.panel.setObjectName("metricMultiSelectPopup")
-        shadow = QGraphicsDropShadowEffect(self.panel)
-        shadow.setBlurRadius(22)
-        shadow.setOffset(0, 6)
-        shadow.setColor(QColor(15, 23, 42, 55))
-        self.panel.setGraphicsEffect(shadow)
         outer.addWidget(self.panel)
 
         panel_layout = QVBoxLayout(self.panel)
@@ -792,6 +802,9 @@ class ModernSelect(QWidget):
         self._refresh_button()
         self.changed.emit()
 
+    def clear(self) -> None:
+        self.set_value(None)
+
     def _refresh_button(self) -> None:
         matched_label = next(
             (
@@ -811,14 +824,8 @@ class ModernSelect(QWidget):
 
         shadow_host = QFrame()
         shadow_host.setObjectName("metricSelectPopup")
-        shadow = QGraphicsDropShadowEffect(shadow_host)
-        shadow.setBlurRadius(22)
-        shadow.setOffset(0, 6)
-        shadow.setColor(QColor(15, 23, 42, 55))
-        shadow_host.setGraphicsEffect(shadow)
-
         popup_layout = QVBoxLayout(popup)
-        popup_layout.setContentsMargins(10, 10, 10, 12)
+        popup_layout.setContentsMargins(3, 3, 3, 3)
         popup_layout.addWidget(shadow_host)
         options_layout = QVBoxLayout(shadow_host)
         options_layout.setContentsMargins(7, 7, 7, 7)
@@ -920,6 +927,11 @@ class OptionalSelectField(QWidget):
             else ""
         )
 
+    def clear(self) -> None:
+        self.selector.clear()
+        self.other_input.clear()
+        self.other_input.setVisible(False)
+
     def _on_changed(self) -> None:
         data = self.selector.value()
         self.other_input.setVisible(data == "__other__")
@@ -962,6 +974,11 @@ class IndicatorCountField(QWidget):
         if data == "__other__":
             return self.custom_spin.value()
         return int(data) if data is not None else None
+
+    def clear(self) -> None:
+        self.selector.clear()
+        self.custom_spin.setValue(7)
+        self.custom_spin.setVisible(False)
 
     def _on_changed(self) -> None:
         self.custom_spin.setVisible(self.selector.value() == "__other__")
@@ -1029,6 +1046,12 @@ class ReferenceDropZone(QFrame):
         ]
         self.changed.emit()
 
+    def clear(self) -> None:
+        if not self._attachments:
+            return
+        self._attachments.clear()
+        self.changed.emit()
+
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton and self.isEnabled():
             extensions = " ".join(
@@ -1066,12 +1089,15 @@ class MetricResultCard(QFrame):
         super().__init__(parent)
         self.setObjectName("metricResultCard")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
 
         header = QHBoxLayout()
+        header.setSpacing(10)
+        index_badge = QLabel(f"M{position:02d}")
+        index_badge.setObjectName("metricResultIndex")
         self.toggle = QPushButton(
-            f"›  {position}. {indicator.title}"
+            f"›  {indicator.title}"
         )
         self.toggle.setObjectName("metricResultToggle")
         self.toggle.setCheckable(True)
@@ -1082,6 +1108,7 @@ class MetricResultCard(QFrame):
             f"资料难度 {indicator.data_acquisition_difficulty}"
         )
         badges.setObjectName("metricResultBadges")
+        header.addWidget(index_badge)
         header.addWidget(self.toggle, stretch=1)
         header.addWidget(badges)
         layout.addLayout(header)
@@ -1221,6 +1248,15 @@ class MetricDiscoveryPage(QWidget):
         self.setStyleSheet(METRIC_DISCOVERY_STYLE)
         self._busy = False
         self._last_result: MetricDiscoveryResult | None = None
+        self._busy_message = ""
+        self._last_elapsed_seconds = 0.0
+        self._elapsed_timer = QElapsedTimer()
+        self._elapsed_ui_timer = QTimer(self)
+        self._elapsed_ui_timer.setInterval(1000)
+        self._elapsed_ui_timer.timeout.connect(self._refresh_elapsed_display)
+        self._feedback_timer = QTimer(self)
+        self._feedback_timer.setSingleShot(True)
+        self._feedback_timer.timeout.connect(self._hide_feedback)
         self._build_ui()
         self._connect_change_signals()
         self._refresh_summary()
@@ -1245,12 +1281,24 @@ class MetricDiscoveryPage(QWidget):
         self.generate_button.setAccessibleName("开始分析并生成指标")
         self.generate_button.setCursor(Qt.PointingHandCursor)
         self.generate_button.clicked.connect(self._submit)
-        self.edit_button = QPushButton("调整输入")
+        self.reset_button = QPushButton("重置")
+        self.reset_button.setObjectName("metricResetButton")
+        self.reset_button.setCursor(Qt.PointingHandCursor)
+        self.reset_button.setToolTip("清空当前填写内容、附件和生成结果")
+        self.reset_button.clicked.connect(self._confirm_reset)
+        self.return_result_button = QPushButton("←  返回结果")
+        self.return_result_button.setObjectName("metricBackButton")
+        self.return_result_button.setCursor(Qt.PointingHandCursor)
+        self.return_result_button.setVisible(False)
+        self.return_result_button.clicked.connect(self._show_last_result)
+        self.edit_button = QPushButton("调整指标")
         self.edit_button.setObjectName("metricSecondaryButton")
         self.edit_button.setCursor(Qt.PointingHandCursor)
         self.edit_button.setVisible(False)
         self.edit_button.clicked.connect(self._show_form)
         header_layout.addWidget(title, stretch=1)
+        header_layout.addWidget(self.return_result_button)
+        header_layout.addWidget(self.reset_button)
         header_layout.addWidget(self.generate_button)
         header_layout.addWidget(self.edit_button)
         root.addWidget(header)
@@ -1261,9 +1309,10 @@ class MetricDiscoveryPage(QWidget):
         self.result_scroll.setObjectName("metricResultScroll")
         self.result_scroll.setWidgetResizable(True)
         self.result_host = QWidget()
+        self.result_host.setObjectName("metricResultHost")
         self.result_layout = QVBoxLayout(self.result_host)
         self.result_layout.setContentsMargins(28, 18, 28, 28)
-        self.result_layout.setSpacing(10)
+        self.result_layout.setSpacing(14)
         self.result_scroll.setWidget(self.result_host)
         self.page_stack.addWidget(self.result_scroll)
         root.addWidget(self.page_stack, stretch=1)
@@ -1568,16 +1617,21 @@ class MetricDiscoveryPage(QWidget):
 
     def show_busy(self, message: str = "正在准备指标生成请求") -> None:
         self._busy = True
+        self._busy_message = message
+        self._elapsed_timer.start()
+        self._elapsed_ui_timer.start()
         self.feedback_label.setVisible(False)
-        self.busy_label.setText(message)
+        self._refresh_elapsed_display()
         self.busy_progress.setRange(0, 0)
         self.busy_frame.setVisible(True)
         self.generate_button.setEnabled(False)
+        self.reset_button.setEnabled(False)
+        self.return_result_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
 
     def handle_event(self, event: dict) -> None:
-        message = str(event.get("message") or "正在生成")
-        self.busy_label.setText(message)
+        self._busy_message = str(event.get("message") or "正在生成")
+        self._refresh_elapsed_display()
         current = event.get("current")
         total = event.get("total")
         if isinstance(current, int) and isinstance(total, int) and total > 0:
@@ -1588,35 +1642,99 @@ class MetricDiscoveryPage(QWidget):
 
     def show_error(self, message: str) -> None:
         self._busy = False
+        self._elapsed_ui_timer.stop()
+        self._elapsed_timer.invalidate()
         self.busy_frame.setVisible(False)
         self.generate_button.setEnabled(True)
+        self.reset_button.setEnabled(True)
+        self.return_result_button.setEnabled(True)
+        cancelled = "cancel" in message.lower() or "取消" in message
         self._show_form_error(
-            "已取消本次生成。"
-            if "cancel" in message.lower() or "取消" in message
-            else message
+            "已取消本次生成。" if cancelled else message,
+            auto_hide_ms=3600 if cancelled else 0,
         )
+
+    def apply_company_selection(
+        self,
+        candidate: CompanyCandidate,
+        original_query: str,
+    ) -> None:
+        """Reflect the confirmed legal entity in the editable form."""
+        self.company_name.setText(candidate.company_name)
+        if original_query.strip() and (
+            original_query.strip() != candidate.company_name
+        ):
+            self.company_name.setToolTip(
+                f"由“{original_query.strip()}”确认的工商主体"
+            )
+        else:
+            self.company_name.setToolTip("已确认工商主体")
+
+    def resume_after_company_selection_cancel(self) -> None:
+        """Return to the form without treating an explicit edit as a failure."""
+        self._busy = False
+        self._elapsed_ui_timer.stop()
+        self._elapsed_timer.invalidate()
+        self.busy_frame.setVisible(False)
+        self.generate_button.setEnabled(True)
+        self.reset_button.setEnabled(True)
+        self.return_result_button.setEnabled(True)
+        self.feedback_label.setVisible(False)
+        self.company_name.setFocus()
+        self.company_name.selectAll()
 
     def show_result(self, result: MetricDiscoveryResult) -> None:
         self._busy = False
         self._last_result = result
+        if self._elapsed_timer.isValid():
+            self._last_elapsed_seconds = self._elapsed_timer.elapsed() / 1000
+        else:
+            self._last_elapsed_seconds = 0.0
+        self._elapsed_ui_timer.stop()
+        self._elapsed_timer.invalidate()
         self.busy_frame.setVisible(False)
         self.generate_button.setEnabled(True)
+        self.reset_button.setEnabled(True)
+        self.return_result_button.setEnabled(True)
         _clear_layout(self.result_layout)
 
+        hero = QFrame()
+        hero.setObjectName("metricResultHero")
+        hero_layout = QVBoxLayout(hero)
+        hero_layout.setContentsMargins(20, 18, 20, 18)
+        hero_layout.setSpacing(8)
+        hero_top = QHBoxLayout()
+        status = QLabel("生成完成")
+        status.setObjectName("metricResultStatus")
+        self.result_duration_label = QLabel(
+            f"耗时 {_format_result_elapsed(self._last_elapsed_seconds)}"
+        )
+        self.result_duration_label.setObjectName("metricResultDuration")
+        hero_top.addWidget(status, alignment=Qt.AlignLeft)
+        hero_top.addStretch()
+        hero_top.addWidget(self.result_duration_label)
+        hero_layout.addLayout(hero_top)
+
+        count = QLabel(f"{len(result.indicators)} 项数据核查指标")
+        count.setObjectName("metricResultCount")
+        hero_layout.addWidget(count)
         summary = QLabel(result.summary)
         summary.setObjectName("metricResultSummary")
         summary.setWordWrap(True)
-        count = QLabel(
-            f"已生成 {len(result.indicators)} 项可执行指标"
-            + (
-                f" · 汇总 {len(result.consolidated_data_requests)} 类资料需求"
-                if result.consolidated_data_requests
-                else ""
-            )
+        hero_layout.addWidget(summary)
+
+        result_meta = QHBoxLayout()
+        indicator_meta = QLabel(f"指标 {len(result.indicators)} 项")
+        indicator_meta.setObjectName("metricResultMeta")
+        request_meta = QLabel(
+            f"资料需求 {len(result.consolidated_data_requests)} 类"
         )
-        count.setObjectName("metricResultCount")
-        self.result_layout.addWidget(count)
-        self.result_layout.addWidget(summary)
+        request_meta.setObjectName("metricResultMeta")
+        result_meta.addWidget(indicator_meta)
+        result_meta.addWidget(request_meta)
+        result_meta.addStretch()
+        hero_layout.addLayout(result_meta)
+        self.result_layout.addWidget(hero)
 
         if result.source_notes:
             self.result_layout.addWidget(
@@ -1637,6 +1755,10 @@ class MetricDiscoveryPage(QWidget):
             request_header = QHBoxLayout()
             title = QLabel("客户资料清单")
             title.setObjectName("metricResultSectionTitle")
+            request_count = QLabel(
+                f"{len(result.consolidated_data_requests)} 类"
+            )
+            request_count.setObjectName("metricSectionCount")
             copy_all = QPushButton("复制全部资料清单")
             copy_all.setObjectName("metricSecondaryButton")
             copy_all.setCursor(Qt.PointingHandCursor)
@@ -1648,6 +1770,7 @@ class MetricDiscoveryPage(QWidget):
                 )
             )
             request_header.addWidget(title)
+            request_header.addWidget(request_count)
             request_header.addStretch()
             request_header.addWidget(copy_all)
             self.result_layout.addLayout(request_header)
@@ -1667,22 +1790,49 @@ class MetricDiscoveryPage(QWidget):
                     _result_section(name, text, accent=True)
                 )
 
+        indicators_header = QHBoxLayout()
         indicators_title = QLabel("分析指标")
         indicators_title.setObjectName("metricResultSectionTitle")
-        self.result_layout.addWidget(indicators_title)
+        indicators_count = QLabel(f"{len(result.indicators)} 项")
+        indicators_count.setObjectName("metricSectionCount")
+        indicators_header.addWidget(indicators_title)
+        indicators_header.addWidget(indicators_count)
+        indicators_header.addStretch()
+        self.result_layout.addLayout(indicators_header)
         for index, indicator in enumerate(result.indicators, start=1):
             card = MetricResultCard(indicator, index)
             self.result_layout.addWidget(card)
         self.result_layout.addStretch()
         self.page_stack.setCurrentIndex(1)
+        self.result_scroll.verticalScrollBar().setValue(0)
         self.generate_button.setVisible(False)
+        self.return_result_button.setVisible(False)
         self.edit_button.setVisible(True)
 
     def _show_form(self) -> None:
         self.page_stack.setCurrentIndex(0)
         self.edit_button.setVisible(False)
+        self.return_result_button.setVisible(self._last_result is not None)
         self.generate_button.setVisible(True)
         self.form_scroll.setFocus()
+
+    def _show_last_result(self) -> None:
+        if self._last_result is None or self._busy:
+            return
+        self.page_stack.setCurrentIndex(1)
+        self.generate_button.setVisible(False)
+        self.return_result_button.setVisible(False)
+        self.edit_button.setVisible(True)
+        self.result_scroll.setFocus()
+
+    def _refresh_elapsed_display(self) -> None:
+        if not self._elapsed_timer.isValid():
+            return
+        elapsed_seconds = self._elapsed_timer.elapsed() // 1000
+        minutes, seconds = divmod(elapsed_seconds, 60)
+        self.busy_label.setText(
+            f"{self._busy_message}  ·  {minutes:02d}:{seconds:02d}"
+        )
 
     def _submit(self) -> None:
         if self._busy:
@@ -1692,13 +1842,68 @@ class MetricDiscoveryPage(QWidget):
         except MetricDiscoveryContractError as exc:
             self._show_form_error(str(exc))
             return
-        self.feedback_label.setVisible(False)
+        self._hide_feedback()
         self.show_busy()
         self.analysis_requested.emit(request)
 
-    def _show_form_error(self, message: str) -> None:
+    def _show_form_error(
+        self,
+        message: str,
+        *,
+        auto_hide_ms: int = 0,
+    ) -> None:
+        self._feedback_timer.stop()
         self.feedback_label.setText(_friendly_metric_error(message))
         self.feedback_label.setVisible(True)
+        if auto_hide_ms > 0:
+            self._feedback_timer.start(auto_hide_ms)
+
+    def _hide_feedback(self) -> None:
+        self._feedback_timer.stop()
+        self.feedback_label.clear()
+        self.feedback_label.setVisible(False)
+
+    def _confirm_reset(self) -> None:
+        if self._busy:
+            return
+        if self._has_form_content() or self._last_result is not None:
+            answer = QMessageBox.question(
+                self,
+                "重置指标生成",
+                "清空当前填写内容、附件和生成结果？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self.reset()
+
+    def reset(self) -> None:
+        """Return the indicator feature to a clean initial state."""
+        if self._busy:
+            return
+        self.company_name.clear()
+        self.company_name.setToolTip("")
+        self.public_research.setChecked(False)
+        self.industries.clear()
+        self.business_models.clear()
+        self.products_services.clear()
+        self.customer_types.clear()
+        self.additional_information.clear()
+        self.directions.clear()
+        self.focuses.clear()
+        self.request_scope.clear()
+        self.indicator_count.clear()
+        self.drop_zone.clear()
+        self._last_result = None
+        self._last_elapsed_seconds = 0.0
+        self.page_stack.setCurrentIndex(0)
+        self.edit_button.setVisible(False)
+        self.return_result_button.setVisible(False)
+        self.generate_button.setVisible(True)
+        self.form_scroll.verticalScrollBar().setValue(0)
+        self._show_form_error("已重置指标生成内容。", auto_hide_ms=3000)
+        self.company_name.setFocus()
 
     def _refresh_attachment_list(self) -> None:
         self.attachment_list.clear()
@@ -1724,7 +1929,15 @@ class MetricDiscoveryPage(QWidget):
             self.drop_zone.remove_paths(paths)
 
     def _refresh_summary(self) -> None:
-        has_input = any(
+        has_input = self._has_form_content()
+        self.generate_button.setAccessibleDescription(
+            "已填写分析信息" if has_input else "尚未填写分析信息"
+        )
+        if has_input and self.feedback_label.isVisible() and not self._busy:
+            self._hide_feedback()
+
+    def _has_form_content(self) -> bool:
+        return any(
             (
                 bool(self.company_name.text().strip()),
                 bool(
@@ -1757,11 +1970,6 @@ class MetricDiscoveryPage(QWidget):
                 bool(self.drop_zone.attachments()),
             )
         )
-        self.generate_button.setAccessibleDescription(
-            "已填写分析信息" if has_input else "尚未填写分析信息"
-        )
-        if has_input and self.feedback_label.isVisible() and not self._busy:
-            self.feedback_label.setVisible(False)
 
 
 def _generate_action_icon() -> QIcon:
@@ -1915,8 +2123,19 @@ def _clear_layout(layout: QLayout) -> None:
             widget.deleteLater()
 
 
+def _format_result_elapsed(seconds: float) -> str:
+    total_seconds = max(0, round(seconds))
+    if total_seconds < 1:
+        return "不足 1 秒"
+    minutes, remaining_seconds = divmod(total_seconds, 60)
+    if minutes:
+        return f"{minutes} 分 {remaining_seconds:02d} 秒"
+    return f"{remaining_seconds} 秒"
+
+
 METRIC_DISCOVERY_STYLE = """
-QWidget#metricDiscoveryPage, QWidget#metricFormPage, QWidget#metricFormHost {
+QWidget#metricDiscoveryPage, QWidget#metricFormPage, QWidget#metricFormHost,
+QWidget#metricResultHost {
     background: #F7F9FC;
     font-family: "Segoe UI";
 }
@@ -2063,13 +2282,13 @@ QLabel#metricResearchBadge {
 }
 QFrame#metricSelectPopup {
     background: #FFFFFF;
-    border: 1px solid #D7DEE8;
-    border-radius: 10px;
+    border: 1px solid #C9CDD4;
+    border-radius: 8px;
 }
 QFrame#metricMultiSelectPopup {
     background: #FFFFFF;
-    border: 1px solid #D7DEE8;
-    border-radius: 10px;
+    border: 1px solid #C9CDD4;
+    border-radius: 8px;
 }
 QLabel#metricDropdownTitle {
     color: #1D2939;
@@ -2201,6 +2420,42 @@ QPushButton#metricSecondaryButton:hover {
     border-color: #8AB4F8;
     background: #F4F8FE;
 }
+QPushButton#metricBackButton {
+    color: #165DFF;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 7px 9px;
+    font-size: 12px;
+    font-weight: 600;
+}
+QPushButton#metricBackButton:hover {
+    color: #0E42D2;
+    background: #F2F3F5;
+}
+QPushButton#metricBackButton:disabled {
+    color: #C9CDD4;
+    background: transparent;
+}
+QPushButton#metricResetButton {
+    color: #4E5969;
+    background: #FFFFFF;
+    border: 1px solid #C9CDD4;
+    border-radius: 7px;
+    padding: 7px 11px;
+    font-size: 12px;
+    font-weight: 600;
+}
+QPushButton#metricResetButton:hover {
+    color: #165DFF;
+    border-color: #94BFFF;
+    background: #F2F7FF;
+}
+QPushButton#metricResetButton:disabled {
+    color: #C9CDD4;
+    border-color: #E5E6EB;
+    background: #F7F8FA;
+}
 QWidget#metricFloatingControls {
     background: transparent;
 }
@@ -2252,65 +2507,102 @@ QCheckBox#metricPublicResearch {
     border: none;
     padding: 0;
 }
+QFrame#metricResultHero {
+    background: #FFFFFF;
+    border: 1px solid #E5E6EB;
+    border-radius: 12px;
+}
+QLabel#metricResultStatus {
+    color: #00B42A;
+    background: #E8FFEA;
+    border-radius: 8px;
+    padding: 3px 9px;
+    font-size: 10px;
+    font-weight: 700;
+}
+QLabel#metricResultDuration {
+    color: #4E5969;
+    font-size: 11px;
+    font-weight: 500;
+}
+QLabel#metricResultMeta, QLabel#metricSectionCount {
+    color: #4E5969;
+    background: #F2F3F5;
+    border-radius: 8px;
+    padding: 3px 8px;
+    font-size: 10px;
+    font-weight: 600;
+}
 QFrame#metricResultCard {
     background: #FFFFFF;
-    border: 1px solid #DFE5EC;
-    border-radius: 9px;
+    border: 1px solid #E5E6EB;
+    border-radius: 10px;
+}
+QFrame#metricResultCard:hover {
+    border-color: #A9C7FF;
+}
+QLabel#metricResultIndex {
+    color: #165DFF;
+    background: #E8F3FF;
+    border-radius: 8px;
+    padding: 4px 7px;
+    font-size: 10px;
+    font-weight: 700;
 }
 QPushButton#metricResultToggle {
-    color: #1D2939;
+    color: #1D2129;
     background: transparent;
     border: none;
     text-align: left;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 700;
-    padding: 3px 0;
+    padding: 4px 0;
 }
-QPushButton#metricResultToggle:hover { color: #174EA6; }
+QPushButton#metricResultToggle:hover { color: #165DFF; }
 QLabel#metricResultBadges {
-    color: #667085;
-    background: #F5F7FA;
+    color: #4E5969;
+    background: #F2F3F5;
     border-radius: 9px;
-    padding: 3px 7px;
+    padding: 4px 8px;
     font-size: 10px;
     font-weight: 600;
 }
 QLabel#metricResultCount {
-    color: #174EA6;
-    font-size: 12px;
+    color: #1D2129;
+    font-size: 20px;
     font-weight: 700;
 }
 QLabel#metricResultSummary {
-    color: #344054;
+    color: #4E5969;
     font-size: 12px;
-    font-weight: 450;
+    font-weight: 400;
 }
 QLabel#metricResultAssumption {
-    color: #725B00;
-    background: #FFF8D8;
-    border: 1px solid #F2DF8A;
-    border-radius: 6px;
-    padding: 7px 9px;
+    color: #7A4D00;
+    background: #FFF7E8;
+    border: 1px solid #FFCF8B;
+    border-radius: 8px;
+    padding: 9px 11px;
     font-size: 11px;
     font-weight: 500;
 }
 QFrame#metricResultSection {
-    background: #FAFBFC;
-    border: 1px solid #EEF1F4;
-    border-radius: 6px;
+    background: #F7F8FA;
+    border: 1px solid #E5E6EB;
+    border-radius: 8px;
 }
 QFrame#metricResultAccentSection {
-    background: #F5F9FF;
-    border: 1px solid #DCE8F8;
-    border-radius: 6px;
+    background: #F2F7FF;
+    border: 1px solid #BEDAFF;
+    border-radius: 8px;
 }
 QLabel#metricResultSectionTitle {
-    color: #344054;
-    font-size: 12px;
+    color: #1D2129;
+    font-size: 13px;
     font-weight: 700;
 }
 QLabel#metricResultSectionBody {
-    color: #475467;
+    color: #4E5969;
     font-size: 11px;
     font-weight: 400;
 }

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -184,6 +184,42 @@ class MetricDiscoveryRequest:
             ensure_ascii=False,
             separators=(",", ":"),
         )
+
+    def with_selected_company(
+        self,
+        selected_company: dict[str, Any],
+        *,
+        original_query: str | None = None,
+    ) -> "MetricDiscoveryRequest":
+        """Return the same request anchored to a user-confirmed legal entity."""
+        company_name = str(
+            selected_company.get("company_name") or ""
+        ).strip()
+        if not company_name:
+            raise MetricDiscoveryContractError(
+                "The selected company has no registered name."
+            )
+        company_information = dict(self.company_information)
+        source_query = str(
+            original_query
+            or company_information.get("company_query")
+            or company_information.get("company_name")
+            or ""
+        ).strip()
+        company_information["company_query"] = source_query
+        company_information["company_name"] = company_name
+        company_information["selected_company"] = {
+            key: str(selected_company.get(key) or "").strip()
+            for key in (
+                "company_name",
+                "company_id",
+                "credit_code",
+                "status",
+                "legal_representative",
+                "established_date",
+            )
+        }
+        return replace(self, company_information=company_information)
 
 
 @dataclass(frozen=True)

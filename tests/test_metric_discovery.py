@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QLabel,
+    QMessageBox,
     QWidget,
 )
 
@@ -452,6 +453,59 @@ def test_metric_form_allows_blank_unlimited_and_custom_choices(qapp):
     page.close()
 
 
+def test_metric_form_reset_clears_inputs_attachments_and_old_result(
+    qapp,
+    monkeypatch,
+    tmp_path,
+):
+    page = MetricDiscoveryPage()
+    reference = tmp_path / "company-profile.pdf"
+    reference.write_bytes(b"%PDF-1.4")
+    page.company_name.setText("Example Co")
+    page.public_research.setChecked(True)
+    page.industries._set_checked(
+        page.industries._option_order[0],
+        True,
+    )
+    next(iter(page.directions._buttons.values())).setChecked(True)
+    page.request_scope.selector.set_value("常规范围")
+    page.indicator_count.selector.set_value(8)
+    page.drop_zone.add_files([str(reference)])
+    page._last_result = object()
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.Yes,
+    )
+
+    page._confirm_reset()
+
+    assert page.company_name.text() == ""
+    assert not page.public_research.isChecked()
+    assert page.industries.selected_values() == []
+    assert page.directions.selected_values() == []
+    assert page.request_scope.value() is None
+    assert page.indicator_count.value() is None
+    assert page.drop_zone.attachments() == ()
+    assert page._last_result is None
+    assert page.feedback_label.text() == "已重置指标生成内容。"
+    assert page._feedback_timer.isActive()
+    page.close()
+
+
+def test_transient_metric_feedback_hides_after_timeout(qapp):
+    page = MetricDiscoveryPage()
+    page.show()
+    page._show_form_error("已取消本次生成。", auto_hide_ms=20)
+
+    QTest.qWait(50)
+    qapp.processEvents()
+
+    assert not page.feedback_label.isVisible()
+    assert page.feedback_label.text() == ""
+    page.close()
+
+
 def test_metric_form_core_controls_are_visible_in_default_window(qapp):
     window = MainWindow()
     window.show()
@@ -558,6 +612,19 @@ def test_hierarchical_dropdown_switches_children_on_category_hover(qapp):
     assert set(first_labels).isdisjoint(visible_options)
     assert set(second_labels).issubset(visible_options)
     assert popup._category_buttons[second_category].property("active")
+    popup.close()
+    page.close()
+
+
+def test_dropdown_popup_uses_uniform_border_without_clipped_shadow(qapp):
+    page = MetricDiscoveryPage()
+    popup = MultiSelectPopup(page.industries)
+
+    assert popup.panel.graphicsEffect() is None
+    margins = popup.layout().contentsMargins()
+    assert len(
+        {margins.left(), margins.top(), margins.right(), margins.bottom()}
+    ) == 1
     popup.close()
     page.close()
 
@@ -725,6 +792,40 @@ def test_metric_result_renders_expandable_data_request_cards(qapp):
     qapp.processEvents()
     assert cards[0].body.isVisible()
     assert "Data-based indicator 1" in cards[0].toggle.text()
+    page.close()
+
+
+def test_metric_generation_tracks_elapsed_time_and_shows_result_duration(qapp):
+    page = MetricDiscoveryPage()
+    result = MetricDiscoveryResult.from_workflow_response(_workflow_response())
+
+    page.show_busy("正在生成")
+    QTest.qWait(20)
+    page.show_result(result)
+    qapp.processEvents()
+
+    assert not page._elapsed_ui_timer.isActive()
+    assert page.result_duration_label.text().startswith("耗时 ")
+    assert page.result_host.findChild(QWidget, "metricResultHero") is not None
+    page.close()
+
+
+def test_adjusted_metric_form_can_return_to_last_result(qapp):
+    page = MetricDiscoveryPage()
+    result = MetricDiscoveryResult.from_workflow_response(_workflow_response())
+    page.show_result(result)
+    page.show()
+    qapp.processEvents()
+
+    page.edit_button.click()
+    qapp.processEvents()
+    assert page.page_stack.currentIndex() == 0
+    assert page.return_result_button.isVisible()
+
+    page.return_result_button.click()
+    qapp.processEvents()
+    assert page.page_stack.currentIndex() == 1
+    assert len(page.result_host.findChildren(MetricResultCard)) == 5
     page.close()
 
 

@@ -65,6 +65,7 @@ from ui.result_panel import AnalysisResultPanel, RESULT_PANEL_STYLE
 from ui.cleaning_page import CleaningPage, CLEANING_PAGE_STYLE
 from ui.data_portal import DataPortalPage, DATA_PORTAL_STYLE
 from ui.data_portal import SUPPORTED_DATASET_SUFFIXES
+from ui.company_selection_dialog import CompanySelectionDialog
 from ui.metric_discovery_page import MetricDiscoveryPage
 from core.analysis_result import AnalysisResult
 from core.experience_payload import new_analysis_run_id, new_analysis_session_id
@@ -75,6 +76,7 @@ from workers.experience_worker import ExperienceSubmissionQueue
 from workers.import_worker import ImportWorker
 from workers.cleaning_worker import CleaningExecutionWorker, CleaningProfileWorker
 from workers.export_worker import AnalysisExportWorker
+from workers.company_resolution_worker import CompanyResolutionWorker
 from workers.metric_discovery_worker import MetricDiscoveryWorker
 
 
@@ -303,6 +305,9 @@ class MainWindow(QMainWindow):
         self._export_worker = None
         self._metric_thread = None
         self._metric_worker = None
+        self._company_resolution_thread = None
+        self._company_resolution_worker = None
+        self._pending_metric_request = None
         self._experience_submissions = ExperienceSubmissionQueue(self)
         self._experience_submissions.submitted.connect(
             self._on_experience_submission_finished
@@ -1005,6 +1010,147 @@ class MainWindow(QMainWindow):
         animation.start()
 
     def _start_metric_discovery(self, request) -> None:
+        if (
+            self._metric_thread is not None
+            or self._company_resolution_thread is not None
+        ):
+            return
+        company_name = str(
+            request.company_information.get("company_name") or ""
+        ).strip()
+        settings.reload()
+        resolution_ready = all(
+            settings.company_resolution_workflow_status().values()
+        )
+        if (
+            request.public_research_enabled
+            and company_name
+            and resolution_ready
+        ):
+            self._pending_metric_request = request
+            self._start_company_resolution(company_name)
+            return
+        if request.public_research_enabled and company_name and not resolution_ready:
+            self.log_output.append(
+                "Company resolution workflow is not configured; "
+                "continuing with the original company name."
+            )
+        self._launch_metric_worker(request)
+
+    def _start_company_resolution(self, company_name: str) -> None:
+        thread = QThread(self)
+        worker = CompanyResolutionWorker(company_name)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.event.connect(self.metric_page.handle_event)
+        worker.finished.connect(self._on_company_resolution_finished)
+        worker.error.connect(self._on_company_resolution_failed)
+        worker.cancelled.connect(self._on_company_resolution_cancelled)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_company_resolution)
+        self._company_resolution_thread = thread
+        self._company_resolution_worker = worker
+        thread.start()
+
+    def _on_company_resolution_finished(self, result) -> None:
+        request = self._pending_metric_request
+        if request is None:
+            return
+
+        candidate = None
+        if result.resolution_status == "direct_match":
+            candidate = result.selected_company
+        elif result.requires_selection:
+            self.metric_page.handle_event(
+                {"type": "status", "message": "请选择本次分析的工商主体"}
+            )
+            dialog = CompanySelectionDialog(
+                result.original_query
+                or str(
+                    request.company_information.get("company_name") or ""
+                ),
+                result.candidates,
+                self,
+            )
+            if not dialog.exec():
+                self._pending_metric_request = None
+                self.metric_page.resume_after_company_selection_cancel()
+                return
+            candidate = dialog.selected_candidate()
+
+        if candidate is not None:
+            original_query = (
+                result.original_query
+                or str(
+                    request.company_information.get("company_name") or ""
+                ).strip()
+            )
+            request = request.with_selected_company(
+                candidate.to_payload(),
+                original_query=original_query,
+            )
+            self.metric_page.apply_company_selection(
+                candidate,
+                original_query,
+            )
+            self.metric_page.handle_event(
+                {
+                    "type": "status",
+                    "message": f"已确认工商主体：{candidate.company_name}",
+                }
+            )
+        else:
+            self.metric_page.handle_event(
+                {
+                    "type": "status",
+                    "message": "未确认工商主体，正在按原名称继续",
+                }
+            )
+
+        self._pending_metric_request = None
+        QTimer.singleShot(
+            0,
+            lambda pending_request=request: self._launch_metric_worker(
+                pending_request
+            ),
+        )
+
+    def _on_company_resolution_failed(self, error: str) -> None:
+        request = self._pending_metric_request
+        self._pending_metric_request = None
+        self.log_output.append(
+            f"Company resolution unavailable; continuing without preflight: "
+            f"{error}"
+        )
+        if request is None:
+            self.metric_page.show_error(error)
+            return
+        self.metric_page.handle_event(
+            {
+                "type": "status",
+                "message": "工商主体预检不可用，正在按原名称继续",
+            }
+        )
+        QTimer.singleShot(
+            0,
+            lambda pending_request=request: self._launch_metric_worker(
+                pending_request
+            ),
+        )
+
+    def _on_company_resolution_cancelled(self) -> None:
+        self._pending_metric_request = None
+        self.metric_page.show_error("Request cancelled")
+
+    def _cleanup_company_resolution(self) -> None:
+        self._company_resolution_thread = None
+        self._company_resolution_worker = None
+
+    def _launch_metric_worker(self, request) -> None:
         if self._metric_thread is not None:
             return
         thread = QThread(self)
@@ -1035,11 +1181,15 @@ class MainWindow(QMainWindow):
         self.log_output.append(f"Business indicator generation failed: {error}")
 
     def _cancel_metric_discovery(self) -> None:
-        if self._metric_worker is None:
+        if self._metric_worker is not None:
+            self._metric_worker.cancel()
+            self.metric_page.cancel_button.setEnabled(False)
+            self.metric_page.busy_label.setText("正在取消本次生成")
             return
-        self._metric_worker.cancel()
-        self.metric_page.cancel_button.setEnabled(False)
-        self.metric_page.busy_label.setText("正在取消本次生成")
+        if self._company_resolution_worker is not None:
+            self._company_resolution_worker.cancel()
+            self.metric_page.cancel_button.setEnabled(False)
+            self.metric_page.busy_label.setText("正在取消本次生成")
 
     def _cleanup_metric_discovery(self) -> None:
         self._metric_thread = None
@@ -2407,6 +2557,14 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._experience_submissions.shutdown()
+        if self._company_resolution_worker is not None:
+            self._company_resolution_worker.cancel()
+        if (
+            self._company_resolution_thread is not None
+            and self._company_resolution_thread.isRunning()
+        ):
+            self._company_resolution_thread.quit()
+            self._company_resolution_thread.wait(3000)
         if self._metric_worker is not None:
             self._metric_worker.cancel()
         if self._metric_thread is not None and self._metric_thread.isRunning():

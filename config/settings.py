@@ -47,6 +47,17 @@ class Settings:
     )
     DIFY_METRIC_API_KEY = os.getenv("DIFY_METRIC_API_KEY", "")
     DIFY_METRIC_TIMEOUT = int(os.getenv("DIFY_METRIC_TIMEOUT", "180"))
+    DIFY_COMPANY_RESOLUTION_BASE_URL = os.getenv(
+        "DIFY_COMPANY_RESOLUTION_BASE_URL",
+        DIFY_METRIC_BASE_URL,
+    )
+    DIFY_COMPANY_RESOLUTION_API_KEY = os.getenv(
+        "DIFY_COMPANY_RESOLUTION_API_KEY",
+        "",
+    )
+    DIFY_COMPANY_RESOLUTION_TIMEOUT = int(
+        os.getenv("DIFY_COMPANY_RESOLUTION_TIMEOUT", "60")
+    )
     METRIC_MAX_REFERENCE_FILES = int(
         os.getenv("METRIC_MAX_REFERENCE_FILES", "10")
     )
@@ -229,6 +240,20 @@ class Settings:
         cls.DIFY_METRIC_TIMEOUT = int(
             os.getenv("DIFY_METRIC_TIMEOUT", str(cls.DIFY_METRIC_TIMEOUT))
         )
+        cls.DIFY_COMPANY_RESOLUTION_BASE_URL = os.getenv(
+            "DIFY_COMPANY_RESOLUTION_BASE_URL",
+            cls.DIFY_METRIC_BASE_URL,
+        )
+        cls.DIFY_COMPANY_RESOLUTION_API_KEY = os.getenv(
+            "DIFY_COMPANY_RESOLUTION_API_KEY",
+            "",
+        )
+        cls.DIFY_COMPANY_RESOLUTION_TIMEOUT = int(
+            os.getenv(
+                "DIFY_COMPANY_RESOLUTION_TIMEOUT",
+                str(cls.DIFY_COMPANY_RESOLUTION_TIMEOUT),
+            )
+        )
         cls.METRIC_MAX_REFERENCE_FILES = int(
             os.getenv(
                 "METRIC_MAX_REFERENCE_FILES",
@@ -322,6 +347,17 @@ class Settings:
             "DIFY_METRIC_BASE_URL": bool(cls.DIFY_METRIC_BASE_URL),
         }
 
+    @classmethod
+    def company_resolution_workflow_status(cls) -> dict[str, bool]:
+        return {
+            "DIFY_COMPANY_RESOLUTION_API_KEY": bool(
+                cls.DIFY_COMPANY_RESOLUTION_API_KEY
+            ),
+            "DIFY_COMPANY_RESOLUTION_BASE_URL": bool(
+                cls.DIFY_COMPANY_RESOLUTION_BASE_URL
+            ),
+        }
+
     @staticmethod
     def _csv(value: str) -> list[str]:
         return [item.strip() for item in value.split(",") if item.strip()]
@@ -350,6 +386,9 @@ class Settings:
             "DIFY_METRIC_API_KEY",
             "DIFY_METRIC_BASE_URL",
             "DIFY_METRIC_TIMEOUT",
+            "DIFY_COMPANY_RESOLUTION_API_KEY",
+            "DIFY_COMPANY_RESOLUTION_BASE_URL",
+            "DIFY_COMPANY_RESOLUTION_TIMEOUT",
         }
         invalid = set(updates) - allowed
         if invalid:

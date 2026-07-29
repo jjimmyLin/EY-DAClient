@@ -4948,4 +4948,7 @@
    'DATA'),
   ('unicodedata.pyd',
    'C:\\Users\\iamin\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\DLLs\\unicodedata.pyd',
+   'EXTENSION'),
+  ('yaml\\_yaml.cp312-win_amd64.pyd',
+   'C:\\Users\\iamin\\Documents\\Codex\\2026-06-07\\jjimmylin-ey-daclient-git-https-github\\EY-DAClient\\.venv\\Lib\\site-packages\\yaml\\_yaml.cp312-win_amd64.pyd',
    'EXTENSION')],)

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -48,7 +49,8 @@ class ApiSettingsDialog(QDialog):
         ]
         self.setWindowTitle("API Settings")
         self.setModal(True)
-        self.setMinimumWidth(540)
+        self.setMinimumSize(540, 480)
+        self.resize(640, 680)
 
         self._provider_combo = QComboBox()
         self._provider_stack = QStackedWidget()
@@ -60,6 +62,9 @@ class ApiSettingsDialog(QDialog):
         self._metric_api_key = QLineEdit()
         self._metric_base_url = QLineEdit()
         self._metric_timeout = QLineEdit()
+        self._company_resolution_api_key = QLineEdit()
+        self._company_resolution_base_url = QLineEdit()
+        self._company_resolution_timeout = QLineEdit()
 
         self._devops_api_key = QLineEdit()
         self._devops_base_url = QLineEdit()
@@ -72,21 +77,33 @@ class ApiSettingsDialog(QDialog):
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(20, 20, 20, 16)
+        layout.setSpacing(12)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("apiSettingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+
+        content = QWidget()
+        content.setObjectName("apiSettingsContent")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 8, 0)
+        content_layout.setSpacing(16)
 
         header = QLabel(
             f"Settings are stored in {env_file()}\n"
             "The app uses Dify as the production analysis path."
         )
         header.setWordWrap(True)
-        layout.addWidget(header)
+        content_layout.addWidget(header)
 
         if not self._devops_allowed:
             notice = QLabel(DEVOPS_DENIED_MESSAGE)
             notice.setObjectName("devopsDeniedNotice")
             notice.setWordWrap(True)
-            layout.addWidget(notice)
+            content_layout.addWidget(notice)
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignLeft)
@@ -94,14 +111,14 @@ class ApiSettingsDialog(QDialog):
             self._provider_combo.addItem(label, provider)
         self._provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         form.addRow("Active mode", self._provider_combo)
-        layout.addLayout(form)
+        content_layout.addLayout(form)
 
         for provider, _label in self._available_providers:
             if provider == "dify":
                 self._provider_stack.addWidget(self._build_dify_page())
             elif provider == "gemini":
                 self._provider_stack.addWidget(self._build_devops_page())
-        layout.addWidget(self._provider_stack, stretch=1)
+        content_layout.addWidget(self._provider_stack)
 
         status_group = QGroupBox("Configuration status")
         status_layout = QVBoxLayout(status_group)
@@ -112,7 +129,11 @@ class ApiSettingsDialog(QDialog):
             self._status_labels[provider] = status
             status_layout.addWidget(title)
             status_layout.addWidget(status)
-        layout.addWidget(status_group)
+        content_layout.addWidget(status_group)
+        content_layout.addStretch()
+
+        scroll.setWidget(content)
+        layout.addWidget(scroll, stretch=1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._save)
@@ -129,6 +150,9 @@ class ApiSettingsDialog(QDialog):
         self._metric_api_key.setEchoMode(QLineEdit.Password)
         self._metric_base_url.setClearButtonEnabled(True)
         self._metric_timeout.setMaximumWidth(120)
+        self._company_resolution_api_key.setEchoMode(QLineEdit.Password)
+        self._company_resolution_base_url.setClearButtonEnabled(True)
+        self._company_resolution_timeout.setMaximumWidth(120)
 
         form.addRow("Analysis API key", self._dify_api_key)
         form.addRow("Analysis base URL", self._dify_base_url)
@@ -144,6 +168,24 @@ class ApiSettingsDialog(QDialog):
         form.addRow("Indicator API key", self._metric_api_key)
         form.addRow("Indicator base URL", self._metric_base_url)
         form.addRow("Indicator timeout (sec)", self._metric_timeout)
+        resolution_note = QLabel(
+            "Company resolution runs before indicator generation when "
+            "enterprise intelligence is enabled and a company name is present."
+        )
+        resolution_note.setWordWrap(True)
+        form.addRow(resolution_note)
+        form.addRow(
+            "Company resolution API key",
+            self._company_resolution_api_key,
+        )
+        form.addRow(
+            "Company resolution base URL",
+            self._company_resolution_base_url,
+        )
+        form.addRow(
+            "Company resolution timeout (sec)",
+            self._company_resolution_timeout,
+        )
         return page
 
     def _build_devops_page(self) -> QWidget:
@@ -180,6 +222,15 @@ class ApiSettingsDialog(QDialog):
         self._metric_api_key.setText(settings.DIFY_METRIC_API_KEY)
         self._metric_base_url.setText(settings.DIFY_METRIC_BASE_URL)
         self._metric_timeout.setText(str(settings.DIFY_METRIC_TIMEOUT))
+        self._company_resolution_api_key.setText(
+            settings.DIFY_COMPANY_RESOLUTION_API_KEY
+        )
+        self._company_resolution_base_url.setText(
+            settings.DIFY_COMPANY_RESOLUTION_BASE_URL
+        )
+        self._company_resolution_timeout.setText(
+            str(settings.DIFY_COMPANY_RESOLUTION_TIMEOUT)
+        )
 
         self._devops_api_key.setText(settings.GEMINI_API_KEY)
         self._devops_base_url.setText(settings.GEMINI_BASE_URL)
@@ -220,6 +271,22 @@ class ApiSettingsDialog(QDialog):
                 else "Indicator workflow ready"
             )
             dify_status.setText(f"{dify_status.text()}\n{suffix}")
+            resolution_missing = [
+                key
+                for key, present in (
+                    settings.company_resolution_workflow_status().items()
+                )
+                if not present
+            ]
+            resolution_suffix = (
+                "Company resolution missing: "
+                + ", ".join(resolution_missing)
+                if resolution_missing
+                else "Company resolution ready"
+            )
+            dify_status.setText(
+                f"{dify_status.text()}\n{resolution_suffix}"
+            )
 
     def _on_provider_changed(self, index: int) -> None:
         self._provider_stack.setCurrentIndex(index)
@@ -252,6 +319,18 @@ class ApiSettingsDialog(QDialog):
             )
             self._metric_base_url.setFocus()
             return
+        company_resolution_base_url = (
+            self._company_resolution_base_url.text().strip().rstrip("/")
+        )
+        if not self._valid_base_url(company_resolution_base_url):
+            QMessageBox.warning(
+                self,
+                "Invalid Company Resolution Base URL",
+                "Enter the company-resolution Dify API base URL, for example "
+                "https://host.example/v1. Do not include /workflows/run.",
+            )
+            self._company_resolution_base_url.setFocus()
+            return
 
         try:
             dify_timeout = self._positive_integer(
@@ -265,6 +344,10 @@ class ApiSettingsDialog(QDialog):
             metric_timeout = self._positive_integer(
                 self._metric_timeout.text(),
                 "Indicator timeout",
+            )
+            company_resolution_timeout = self._positive_integer(
+                self._company_resolution_timeout.text(),
+                "Company resolution timeout",
             )
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid timeout", str(exc))
@@ -286,6 +369,15 @@ class ApiSettingsDialog(QDialog):
             "DIFY_METRIC_API_KEY": self._metric_api_key.text().strip(),
             "DIFY_METRIC_BASE_URL": metric_base_url,
             "DIFY_METRIC_TIMEOUT": str(metric_timeout),
+            "DIFY_COMPANY_RESOLUTION_API_KEY": (
+                self._company_resolution_api_key.text().strip()
+            ),
+            "DIFY_COMPANY_RESOLUTION_BASE_URL": (
+                company_resolution_base_url
+            ),
+            "DIFY_COMPANY_RESOLUTION_TIMEOUT": str(
+                company_resolution_timeout
+            ),
             "GEMINI_API_KEY": devops_api_key,
             "GEMINI_MODEL": "gemini-3.5-flash",
             "GEMINI_BASE_URL": self._devops_base_url.text().strip(),
@@ -325,6 +417,31 @@ class ApiSettingsDialog(QDialog):
             QDialog {
                 background-color: #FFFFFF;
                 font-family: "Segoe UI";
+            }
+            QScrollArea#apiSettingsScroll,
+            QWidget#apiSettingsContent,
+            QScrollArea#apiSettingsScroll QWidget#qt_scrollarea_viewport {
+                background-color: #FFFFFF;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: #F5F7FA;
+                width: 10px;
+                margin: 0;
+                border: none;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background: #C8D0DA;
+                min-height: 32px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #9FAAB7;
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {
+                height: 0;
             }
             QLabel {
                 color: #3C4043;
