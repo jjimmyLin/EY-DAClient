@@ -160,10 +160,12 @@ def _run_gui() -> int:
         settings.validate_provider_name()
 
         from PySide6.QtWidgets import QApplication
+        from ui.fonts import configure_application_font
         from ui.main_window import MainWindow
 
         logging.info("Starting GUI")
         app = QApplication(sys.argv)
+        configure_application_font(app)
         window = MainWindow()
         window.show()
         exit_code = app.exec()

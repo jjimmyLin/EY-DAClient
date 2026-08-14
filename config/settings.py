@@ -126,6 +126,9 @@ class Settings:
         os.getenv("BACKGROUND_EXEC_TIMEOUT_SEC", "3600")
     )
     MAX_CODE_RETRIES = int(os.getenv("MAX_CODE_RETRIES", "3"))
+    MAX_ANALYSIS_REMOTE_ATTEMPTS = int(
+        os.getenv("MAX_ANALYSIS_REMOTE_ATTEMPTS", "3")
+    )
     SAMPLE_ROWS_PER_SHEET = int(os.getenv("SAMPLE_ROWS_PER_SHEET", "5000"))
     LARGE_DATASET_ROWS = int(os.getenv("LARGE_DATASET_ROWS", "100000"))
     LARGE_EXCEL_MB = int(os.getenv("LARGE_EXCEL_MB", "20"))
@@ -145,6 +148,58 @@ class Settings:
     IMPORT_BATCH_ROWS = int(os.getenv("IMPORT_BATCH_ROWS", "20000"))
     IMPORT_SCHEMA_SAMPLE_ROWS = int(os.getenv("IMPORT_SCHEMA_SAMPLE_ROWS", "2000"))
     IMPORT_ROW_GROUP_SIZE = int(os.getenv("IMPORT_ROW_GROUP_SIZE", "50000"))
+    IMPORT_BATCH_TARGET_BYTES = int(
+        os.getenv("IMPORT_BATCH_TARGET_BYTES", str(128 * 1024 * 1024))
+    )
+    IMPORT_BATCH_MEMORY_FRACTION = float(
+        os.getenv("IMPORT_BATCH_MEMORY_FRACTION", "0.10")
+    )
+    IMPORT_MIN_BATCH_ROWS = int(os.getenv("IMPORT_MIN_BATCH_ROWS", "500"))
+    IMPORT_CANCEL_CHECK_ROWS = int(
+        os.getenv("IMPORT_CANCEL_CHECK_ROWS", "1000")
+    )
+    IMPORT_FAST_UNCOMPRESSED_BYTES = int(
+        os.getenv("IMPORT_FAST_UNCOMPRESSED_BYTES", str(512 * 1024 * 1024))
+    )
+    IMPORT_SAFE_SOURCE_BYTES = int(
+        os.getenv("IMPORT_SAFE_SOURCE_BYTES", str(200 * 1024 * 1024))
+    )
+    IMPORT_SAFE_UNCOMPRESSED_BYTES = int(
+        os.getenv("IMPORT_SAFE_UNCOMPRESSED_BYTES", str(4 * 1024 * 1024 * 1024))
+    )
+    IMPORT_SAFE_WORKSHEET_XML_BYTES = int(
+        os.getenv("IMPORT_SAFE_WORKSHEET_XML_BYTES", str(2 * 1024 * 1024 * 1024))
+    )
+    IMPORT_SAFE_SHARED_STRINGS_BYTES = int(
+        os.getenv("IMPORT_SAFE_SHARED_STRINGS_BYTES", str(128 * 1024 * 1024))
+    )
+    IMPORT_MAX_UNCOMPRESSED_BYTES = int(
+        os.getenv("IMPORT_MAX_UNCOMPRESSED_BYTES", str(40 * 1024 * 1024 * 1024))
+    )
+    IMPORT_MAX_COMPRESSION_RATIO = float(
+        os.getenv("IMPORT_MAX_COMPRESSION_RATIO", "100")
+    )
+    IMPORT_ZIP_BOMB_MIN_UNCOMPRESSED_BYTES = int(
+        os.getenv(
+            "IMPORT_ZIP_BOMB_MIN_UNCOMPRESSED_BYTES",
+            str(4 * 1024 * 1024 * 1024),
+        )
+    )
+    IMPORT_MAX_SHARED_STRINGS_BYTES = int(
+        os.getenv("IMPORT_MAX_SHARED_STRINGS_BYTES", str(512 * 1024 * 1024))
+    )
+    IMPORT_SHARED_STRINGS_MEMORY_MULTIPLIER = float(
+        os.getenv("IMPORT_SHARED_STRINGS_MEMORY_MULTIPLIER", "4")
+    )
+    IMPORT_SHARED_STRINGS_MAX_MEMORY_FRACTION = float(
+        os.getenv("IMPORT_SHARED_STRINGS_MAX_MEMORY_FRACTION", "0.35")
+    )
+    IMPORT_DIMENSION_PROBE_BYTES = int(
+        os.getenv("IMPORT_DIMENSION_PROBE_BYTES", str(256 * 1024))
+    )
+    IMPORT_SUSPICIOUS_DIMENSION_XML_BYTES = int(
+        os.getenv("IMPORT_SUSPICIOUS_DIMENSION_XML_BYTES", str(1 * 1024 * 1024))
+    )
     IMPORT_MIN_FREE_DISK_BYTES = int(
         os.getenv("IMPORT_MIN_FREE_DISK_BYTES", str(10 * 1024 * 1024 * 1024))
     )

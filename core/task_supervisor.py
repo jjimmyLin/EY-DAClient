@@ -24,6 +24,7 @@ class TaskRuntime:
     generation: int
     thread: Any
     worker: Any
+    relay: Any = None
     state: TaskState = TaskState.RUNNING
 
 

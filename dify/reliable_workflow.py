@@ -91,6 +91,8 @@ class RemoteRunHandle:
 class ReliableWorkflowRunner:
     """Start once, resume dropped SSE streams, and stop cancelled runs."""
 
+    _STOP_CONFIRM_TIMEOUT = 5.0
+    _STOP_CONFIRM_INTERVAL = 0.25
     _TERMINAL_STATUSES = {
         "succeeded",
         "failed",
@@ -155,7 +157,9 @@ class ReliableWorkflowRunner:
         except RequestCancelled:
             self.stop_remote()
             raise
-        except WorkflowTransportError:
+        except WorkflowTransportError as exc:
+            if self._should_stop_after_transport_error(exc):
+                self.stop_remote()
             raise
         except Exception as exc:
             if self._cancellation_token.is_cancelled:
@@ -170,9 +174,13 @@ class ReliableWorkflowRunner:
             ) from exc
 
     def stop_remote(self) -> bool:
-        """Best-effort remote stop using a fresh client, independent of cancellation."""
+        """Request a remote stop and verify that the run reaches a terminal state."""
         snapshot = self.handle.snapshot()
         if not snapshot.task_id:
+            logger.warning(
+                "Cannot stop Dify workflow because task_id is unknown run_id=%s",
+                snapshot.workflow_run_id,
+            )
             return False
         headers = self._headers()
         url = (
@@ -189,19 +197,39 @@ class ReliableWorkflowRunner:
                     headers=headers,
                     json={"user": snapshot.user},
                 )
-            if response.is_success:
-                logger.info(
-                    "Stopped Dify workflow task task_id=%s run_id=%s",
+            if not response.is_success:
+                logger.warning(
+                    "Dify stop rejected status=%s task_id=%s run_id=%s",
+                    response.status_code,
                     snapshot.task_id,
                     snapshot.workflow_run_id,
                 )
-                return True
-            logger.warning(
-                "Dify stop rejected status=%s task_id=%s run_id=%s",
-                response.status_code,
+                return False
+
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            result = (
+                str(body.get("result") or "").strip().lower()
+                if isinstance(body, dict)
+                else ""
+            )
+            if result and result not in {"success", "ok", "stopped"}:
+                logger.warning(
+                    "Dify stop returned an unsuccessful result=%s "
+                    "task_id=%s run_id=%s",
+                    result,
+                    snapshot.task_id,
+                    snapshot.workflow_run_id,
+                )
+                return False
+            logger.info(
+                "Dify stop accepted task_id=%s run_id=%s; confirming terminal state",
                 snapshot.task_id,
                 snapshot.workflow_run_id,
             )
+            return self._confirm_remote_terminal(snapshot)
         except Exception:
             logger.exception(
                 "Unable to stop Dify workflow task task_id=%s run_id=%s",
@@ -209,6 +237,105 @@ class ReliableWorkflowRunner:
                 snapshot.workflow_run_id,
             )
         return False
+
+    def _confirm_remote_terminal(
+        self,
+        snapshot: RemoteRunSnapshot,
+    ) -> bool:
+        if not snapshot.workflow_run_id:
+            logger.warning(
+                "Dify stop was accepted but cannot be confirmed because "
+                "workflow_run_id is unknown task_id=%s",
+                snapshot.task_id,
+            )
+            return False
+
+        deadline = time.monotonic() + self._STOP_CONFIRM_TIMEOUT
+        last_status = ""
+        while time.monotonic() < deadline:
+            try:
+                detail = self._request_json_for_cleanup(
+                    f"workflows/run/{snapshot.workflow_run_id}"
+                )
+            except WorkflowTransportError as exc:
+                if exc.status_code not in self._TRANSIENT_STATUSES:
+                    logger.warning(
+                        "Dify stop confirmation failed status=%s task_id=%s "
+                        "run_id=%s",
+                        exc.status_code,
+                        snapshot.task_id,
+                        snapshot.workflow_run_id,
+                    )
+                    return False
+            except (httpx.TimeoutException, httpx.RequestError):
+                pass
+            else:
+                last_status = str(
+                    detail.get("status") or ""
+                ).strip().lower()
+                if last_status in {
+                    "stopped",
+                    "failed",
+                    "succeeded",
+                    "partial-succeeded",
+                }:
+                    logger.info(
+                        "Dify workflow reached terminal status=%s "
+                        "task_id=%s run_id=%s",
+                        last_status,
+                        snapshot.task_id,
+                        snapshot.workflow_run_id,
+                    )
+                    return True
+            time.sleep(self._STOP_CONFIRM_INTERVAL)
+
+        logger.warning(
+            "Dify stop was accepted but terminal state was not confirmed "
+            "status=%s task_id=%s run_id=%s",
+            last_status or "<unknown>",
+            snapshot.task_id,
+            snapshot.workflow_run_id,
+        )
+        return False
+
+    def _request_json_for_cleanup(
+        self,
+        endpoint: str,
+    ) -> dict[str, Any]:
+        """Read run state without consulting a cancellation token."""
+        url = f"{self._base_url}/{endpoint.lstrip('/')}"
+        with httpx.Client(
+            timeout=httpx.Timeout(2.0),
+            transport=self._transport,
+        ) as client:
+            response = client.get(url, headers=self._headers())
+        if not response.is_success:
+            raise self._response_error(response)
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise WorkflowTransportError(
+                "Dify returned invalid JSON while confirming workflow stop.",
+                category="protocol_error",
+            ) from exc
+        if not isinstance(body, dict):
+            raise WorkflowTransportError(
+                "Dify returned an invalid stop-confirmation response.",
+                category="protocol_error",
+            )
+        return body
+
+    def _should_stop_after_transport_error(
+        self,
+        error: WorkflowTransportError,
+    ) -> bool:
+        snapshot = self.handle.snapshot()
+        if not snapshot.task_id:
+            return False
+        return error.category not in {
+            "workflow_failed",
+            "workflow_error",
+        }
 
     def _recover_or_raise(
         self,

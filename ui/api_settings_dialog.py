@@ -416,7 +416,7 @@ class ApiSettingsDialog(QDialog):
         self.setStyleSheet("""
             QDialog {
                 background-color: #FFFFFF;
-                font-family: "Segoe UI";
+                font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
             }
             QScrollArea#apiSettingsScroll,
             QWidget#apiSettingsContent,

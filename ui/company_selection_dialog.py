@@ -221,7 +221,7 @@ class CompanySelectionDialog(QDialog):
 COMPANY_SELECTION_STYLE = """
 QDialog#companySelectionDialog {
     background: transparent;
-    font-family: "Segoe UI";
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
 }
 QFrame#companySelectionPanel {
     background: #FFFFFF;

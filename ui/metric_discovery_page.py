@@ -873,69 +873,43 @@ class ModernSelect(QWidget):
         self.changed.emit()
 
 
-class OptionalSelectField(QWidget):
-    """Single-select with a conditional custom value."""
+class ConditionalChoiceField(QWidget):
+    """Required single choice shown only when its business scenario applies."""
 
     changed = Signal()
 
-    def __init__(
-        self,
-        title: str,
-        options: tuple[tuple[str, str], ...],
-        *,
-        hint: str = "",
-        parent=None,
-    ) -> None:
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(5)
-        heading = QLabel(title)
+        heading = QLabel("是否使用达人推广？")
         heading.setObjectName("metricFieldLabel")
-        layout.addWidget(heading)
-        if hint:
-            help_label = QLabel(hint)
-            help_label.setObjectName("metricFieldHint")
-            help_label.setWordWrap(True)
-            layout.addWidget(help_label)
-
-        selector_options = (
-            ("系统自动确定", None, "根据已填写信息确定范围"),
-            *((value, value, description) for value, description in options),
-            ("其他", "__other__", "填写自定义资料范围"),
+        hint = QLabel(
+            "包括达人直播带货、短视频或图文种草、达人橱窗/推广链接，"
+            "以及通过MCN机构开展的达人合作。"
         )
-        self.selector = ModernSelect(selector_options)
-        self.selector.changed.connect(self._on_changed)
-        self.other_input = QLineEdit()
-        self.other_input.setObjectName("metricOtherInput")
-        self.other_input.setPlaceholderText("填写资料范围")
-        self.other_input.setVisible(False)
-        self.other_input.textChanged.connect(self.changed)
+        hint.setObjectName("metricFieldHint")
+        hint.setWordWrap(True)
+        self.selector = ModernSelect(
+            (
+                ("请选择", None, "该信息用于决定是否生成达人推广专项指标"),
+                ("是", "yes", "按达人推广专项指标剧本生成并核查"),
+                ("否", "no", "不生成达人专属指标"),
+                ("暂不确定", "unknown", "仅生成待确认的条件性指标"),
+            )
+        )
+        self.selector.changed.connect(self.changed)
+        layout.addWidget(heading)
+        layout.addWidget(hint)
         layout.addWidget(self.selector)
-        layout.addWidget(self.other_input)
 
     def value(self) -> str | None:
-        data = self.selector.value()
-        if data == "__other__":
-            return "其他"
-        return str(data) if data is not None else None
-
-    def custom_value(self) -> str:
-        return (
-            self.other_input.text().strip()
-            if self.selector.value() == "__other__"
-            else ""
-        )
+        value = self.selector.value()
+        return str(value) if value is not None else None
 
     def clear(self) -> None:
         self.selector.clear()
-        self.other_input.clear()
-        self.other_input.setVisible(False)
-
-    def _on_changed(self) -> None:
-        data = self.selector.value()
-        self.other_input.setVisible(data == "__other__")
-        self.changed.emit()
 
 
 class IndicatorCountField(QWidget):
@@ -1120,6 +1094,57 @@ class MetricResultCard(QFrame):
         body_layout.addWidget(
             _result_section("适用依据", indicator.target_basis)
         )
+        if indicator.regulatory_references:
+            body_layout.addWidget(
+                _result_section(
+                    "第5号文依据",
+                    "、".join(indicator.regulatory_references),
+                    accent=True,
+                )
+            )
+        scope_lines = []
+        if indicator.population_definition:
+            scope_lines.append(f"总体范围：{indicator.population_definition}")
+        if indicator.coverage_period:
+            scope_lines.append(f"覆盖期间：{indicator.coverage_period}")
+        if scope_lines:
+            body_layout.addWidget(
+                _result_section("核查范围与期间", "\n".join(scope_lines))
+            )
+        if indicator.exception_rules:
+            body_layout.addWidget(
+                _result_section(
+                    "异常判定规则",
+                    "\n".join(f"• {item}" for item in indicator.exception_rules),
+                )
+            )
+        if indicator.follow_up_procedures:
+            body_layout.addWidget(
+                _result_section(
+                    "异常后续核查",
+                    "\n".join(
+                        f"{index}. {item}"
+                        for index, item in enumerate(
+                            indicator.follow_up_procedures,
+                            start=1,
+                        )
+                    ),
+                )
+            )
+        if indicator.expected_evidence:
+            body_layout.addWidget(
+                _result_section(
+                    "预期核查证据",
+                    "\n".join(f"• {item}" for item in indicator.expected_evidence),
+                )
+            )
+        if indicator.scope_limitations:
+            body_layout.addWidget(
+                _result_section(
+                    "范围限制",
+                    "\n".join(f"• {item}" for item in indicator.scope_limitations),
+                )
+            )
         for requirement in indicator.data_requirements:
             fields = "、".join(requirement.get("required_fields") or [])
             keys = "、".join(requirement.get("join_keys") or [])
@@ -1283,6 +1308,7 @@ class MetricDiscoveryPage(QWidget):
         self.generate_button.clicked.connect(self._submit)
         self.reset_button = QPushButton("重置")
         self.reset_button.setObjectName("metricResetButton")
+        self.reset_button.setMinimumHeight(38)
         self.reset_button.setCursor(Qt.PointingHandCursor)
         self.reset_button.setToolTip("清空当前填写内容、附件和生成结果")
         self.reset_button.clicked.connect(self._confirm_reset)
@@ -1408,12 +1434,12 @@ class MetricDiscoveryPage(QWidget):
         research_box = ResearchEnhancementCard()
         research_box.setObjectName("metricResearchBox")
         research_layout = QHBoxLayout(research_box)
-        research_layout.setContentsMargins(12, 10, 12, 10)
+        research_layout.setContentsMargins(12, 12, 12, 12)
         research_layout.setSpacing(12)
 
         research_copy = QVBoxLayout()
         research_copy.setContentsMargins(0, 0, 0, 0)
-        research_copy.setSpacing(3)
+        research_copy.setSpacing(5)
         research_title_row = QHBoxLayout()
         research_title_row.setContentsMargins(0, 0, 0, 0)
         research_title_row.setSpacing(7)
@@ -1421,8 +1447,14 @@ class MetricDiscoveryPage(QWidget):
         research_title.setObjectName("metricResearchTitle")
         research_badge = QLabel("天眼查 AI")
         research_badge.setObjectName("metricResearchBadge")
-        research_title_row.addWidget(research_title)
-        research_title_row.addWidget(research_badge)
+        research_title_row.addWidget(
+            research_title,
+            alignment=Qt.AlignVCenter,
+        )
+        research_title_row.addWidget(
+            research_badge,
+            alignment=Qt.AlignVCenter,
+        )
         research_title_row.addStretch()
         research_hint = QLabel(
             "通过天眼查 AI 与公开信息检索，补充公司背景与行业信息"
@@ -1468,6 +1500,10 @@ class MetricDiscoveryPage(QWidget):
         )
         layout.addWidget(self.business_models)
 
+        self.influencer_promotion = ConditionalChoiceField()
+        self.influencer_promotion.setVisible(False)
+        layout.addWidget(self.influencer_promotion)
+
         self.products_services = DropdownMultiSelect(
             "主要产品或服务",
             PRODUCT_SERVICE_OPTIONS,
@@ -1500,10 +1536,64 @@ class MetricDiscoveryPage(QWidget):
     def _build_guidance_card(self) -> QFrame:
         card = _form_card(
             "2  指标生成指引",
-            "选择核查方向和资料范围",
+            "选择核查方向与重点",
             equal_height=True,
         )
         layout = card.layout()
+
+        regulatory_box = ResearchEnhancementCard()
+        regulatory_box.setObjectName("metricResearchBox")
+        regulatory_layout = QHBoxLayout(regulatory_box)
+        regulatory_layout.setContentsMargins(12, 12, 12, 12)
+        regulatory_layout.setSpacing(12)
+
+        regulatory_copy = QVBoxLayout()
+        regulatory_copy.setContentsMargins(0, 0, 0, 0)
+        regulatory_copy.setSpacing(5)
+        regulatory_title_row = QHBoxLayout()
+        regulatory_title_row.setContentsMargins(0, 0, 0, 0)
+        regulatory_title_row.setSpacing(7)
+        regulatory_title = QLabel("发行类第5号针对分析")
+        regulatory_title.setObjectName("metricResearchTitle")
+        regulatory_badge = QLabel("监管规则适用指引")
+        regulatory_badge.setObjectName("metricResearchBadge")
+        regulatory_title_row.addWidget(
+            regulatory_title,
+            alignment=Qt.AlignVCenter,
+        )
+        regulatory_title_row.addWidget(
+            regulatory_badge,
+            alignment=Qt.AlignVCenter,
+        )
+        regulatory_title_row.addStretch()
+        regulatory_hint = QLabel("强化IT审计指标、核查范围与证据要求")
+        regulatory_hint.setObjectName("metricResearchHint")
+        regulatory_hint.setWordWrap(True)
+        regulatory_copy.addLayout(regulatory_title_row)
+        regulatory_copy.addWidget(regulatory_hint)
+
+        self.regulatory_analysis = MetricToggleSwitch()
+        self.regulatory_analysis.setObjectName("metricRegulatoryAnalysis")
+        self.regulatory_analysis.setAccessibleName("发行类第5号针对分析")
+        self.regulatory_analysis.setToolTip(
+            "按《监管规则适用指引——发行类第5号》强化IT审计指标、"
+            "核查范围、异常跟进与证据要求"
+        )
+        self._regulatory_box = regulatory_box
+        regulatory_box.setCursor(Qt.PointingHandCursor)
+        regulatory_box.setToolTip(self.regulatory_analysis.toolTip())
+        regulatory_box.clicked.connect(self.regulatory_analysis.toggle)
+        self.regulatory_analysis.toggled.connect(
+            self._sync_regulatory_analysis_state
+        )
+        regulatory_layout.addLayout(regulatory_copy, stretch=1)
+        regulatory_layout.addWidget(
+            self.regulatory_analysis,
+            alignment=Qt.AlignVCenter,
+        )
+        layout.addWidget(regulatory_box)
+        self._sync_regulatory_analysis_state(False)
+
         self.directions = ChipMultiSelect(
             "分析方向",
             ANALYSIS_DIRECTION_OPTIONS,
@@ -1517,25 +1607,6 @@ class MetricDiscoveryPage(QWidget):
         )
         layout.addWidget(self.focuses)
 
-        self.request_scope = OptionalSelectField(
-            "资料索取范围",
-            (
-                (
-                    "精简范围",
-                    "少量常用明细，适合首轮了解",
-                ),
-                (
-                    "常规范围",
-                    "多张可关联业务明细，适合标准核查",
-                ),
-                (
-                    "完整范围",
-                    "完整业务链数据和编码映射，适合深入核查",
-                ),
-            ),
-            hint="控制向客户索取资料的范围",
-        )
-        layout.addWidget(self.request_scope)
         self.indicator_count = IndicatorCountField()
         layout.addWidget(self.indicator_count)
         return card
@@ -1568,14 +1639,18 @@ class MetricDiscoveryPage(QWidget):
     def _connect_change_signals(self) -> None:
         self.company_name.textChanged.connect(self._refresh_summary)
         self.industries.changed.connect(self._refresh_summary)
+        self.business_models.changed.connect(
+            self._sync_influencer_promotion_visibility
+        )
         self.business_models.changed.connect(self._refresh_summary)
+        self.influencer_promotion.changed.connect(self._refresh_summary)
         self.products_services.changed.connect(self._refresh_summary)
         self.customer_types.changed.connect(self._refresh_summary)
         self.additional_information.textChanged.connect(self._refresh_summary)
         self.public_research.toggled.connect(self._refresh_summary)
+        self.regulatory_analysis.toggled.connect(self._refresh_summary)
         self.directions.changed.connect(self._refresh_summary)
         self.focuses.changed.connect(self._refresh_summary)
-        self.request_scope.changed.connect(self._refresh_summary)
         self.indicator_count.changed.connect(self._refresh_summary)
         self.drop_zone.changed.connect(self._refresh_attachment_list)
 
@@ -1584,33 +1659,61 @@ class MetricDiscoveryPage(QWidget):
         self._research_box.style().unpolish(self._research_box)
         self._research_box.style().polish(self._research_box)
 
+    def _sync_regulatory_analysis_state(self, enabled: bool) -> None:
+        self._regulatory_box.setProperty("enhanced", enabled)
+        self._regulatory_box.style().unpolish(self._regulatory_box)
+        self._regulatory_box.style().polish(self._regulatory_box)
+
+    def _sync_influencer_promotion_visibility(self) -> None:
+        enabled = "电商销售" in self.business_models.selected_values()
+        if not enabled:
+            self.influencer_promotion.clear()
+        self.influencer_promotion.setVisible(enabled)
+        self.influencer_promotion.updateGeometry()
+
     def build_request(self) -> MetricDiscoveryRequest:
-        request = MetricDiscoveryRequest(
-            company_information={
-                "company_name": self.company_name.text().strip(),
-                "industries": self.industries.selected_values(),
-                "industry_custom": self.industries.custom_values(),
-                "business_models": self.business_models.selected_values(),
-                "business_model_custom": self.business_models.custom_values(),
-                "products_services": self.products_services.selected_values(),
-                "products_services_custom": self.products_services.custom_values(),
-                "customer_types": self.customer_types.selected_values(),
-                "customer_type_custom": self.customer_types.custom_values(),
-                "additional_information": (
-                    self.additional_information.toPlainText().strip()
+        business_models = self.business_models.selected_values()
+        company_information = {
+            "company_name": self.company_name.text().strip(),
+            "industries": self.industries.selected_values(),
+            "industry_custom": self.industries.custom_values(),
+            "business_models": business_models,
+            "business_model_custom": self.business_models.custom_values(),
+            "products_services": self.products_services.selected_values(),
+            "products_services_custom": self.products_services.custom_values(),
+            "customer_types": self.customer_types.selected_values(),
+            "customer_type_custom": self.customer_types.custom_values(),
+            "additional_information": (
+                self.additional_information.toPlainText().strip()
+            ),
+        }
+        if "电商销售" in business_models:
+            company_information["ecommerce_marketing"] = {
+                "uses_influencer_promotion": (
+                    self.influencer_promotion.value()
                 ),
-            },
+                "user_confirmed": (
+                    self.influencer_promotion.value() is not None
+                ),
+                "scope_definition": [
+                    "达人直播带货",
+                    "达人短视频或图文种草",
+                    "达人橱窗、商品链接或专属推广链接",
+                    "MCN机构或达人合作投放",
+                ],
+            }
+        request = MetricDiscoveryRequest(
+            company_information=company_information,
             indicator_guidance={
                 "directions": self.directions.selected_values(),
                 "direction_custom": self.directions.custom_values(),
                 "focuses": self.focuses.selected_values(),
                 "focus_custom": self.focuses.custom_values(),
-                "request_scope": self.request_scope.value(),
-                "request_scope_custom": self.request_scope.custom_value(),
                 "indicator_count": self.indicator_count.value(),
             },
             attachments=self.drop_zone.attachments(),
             public_research_enabled=self.public_research.isChecked(),
+            regulatory_analysis_enabled=self.regulatory_analysis.isChecked(),
         )
         request.validate()
         return request
@@ -1735,6 +1838,41 @@ class MetricDiscoveryPage(QWidget):
         result_meta.addStretch()
         hero_layout.addLayout(result_meta)
         self.result_layout.addWidget(hero)
+
+        if result.regulatory_review:
+            applicability = _regulatory_applicability_text(
+                result.regulatory_review
+            )
+            if applicability:
+                self.result_layout.addWidget(
+                    _result_section(
+                        "发行类第5号 · 适用性判断",
+                        applicability,
+                        accent=True,
+                    )
+                )
+            non_data_procedures = result.regulatory_review.get(
+                "non_data_procedures"
+            ) or []
+            if non_data_procedures:
+                self.result_layout.addWidget(
+                    _result_section(
+                        "非数据核查程序",
+                        "\n".join(
+                            f"• {item}" for item in non_data_procedures
+                        ),
+                    )
+                )
+            scope_limitations = result.regulatory_review.get(
+                "scope_limitations"
+            ) or []
+            if scope_limitations:
+                self.result_layout.addWidget(
+                    _result_section(
+                        "专项核查范围限制",
+                        "\n".join(f"• {item}" for item in scope_limitations),
+                    )
+                )
 
         if result.source_notes:
             self.result_layout.addWidget(
@@ -1885,6 +2023,7 @@ class MetricDiscoveryPage(QWidget):
         self.company_name.clear()
         self.company_name.setToolTip("")
         self.public_research.setChecked(False)
+        self.regulatory_analysis.setChecked(False)
         self.industries.clear()
         self.business_models.clear()
         self.products_services.clear()
@@ -1892,7 +2031,6 @@ class MetricDiscoveryPage(QWidget):
         self.additional_information.clear()
         self.directions.clear()
         self.focuses.clear()
-        self.request_scope.clear()
         self.indicator_count.clear()
         self.drop_zone.clear()
         self._last_result = None
@@ -1965,9 +2103,10 @@ class MetricDiscoveryPage(QWidget):
                     self.focuses.selected_values()
                     or self.focuses.custom_values()
                 ),
-                self.request_scope.value() is not None,
+                self.influencer_promotion.value() is not None,
                 self.indicator_count.value() is not None,
                 bool(self.drop_zone.attachments()),
+                self.regulatory_analysis.isChecked(),
             )
         )
 
@@ -2080,8 +2219,30 @@ def _consolidated_request_text(requests) -> str:
     return "\n\n".join(blocks)
 
 
+def _regulatory_applicability_text(review: dict) -> str:
+    rows = review.get("applicability_assessment") or []
+    lines = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        section = str(row.get("section") or "").strip()
+        status = str(row.get("status") or "待确认").strip()
+        basis = str(row.get("basis") or "").strip()
+        if not section:
+            continue
+        line = f"{section}：{status}"
+        if basis:
+            line += f"；{basis}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _friendly_metric_error(message: str) -> str:
-    text = str(message).strip()
+    """Convert backend/workflow details into a short actionable UI message."""
+    text = str(message or "").strip()
+    if not text:
+        return "指标生成失败，请稍后重试。"
+
     lowered = text.casefold()
     if "provide at least one company detail" in lowered:
         return "请填写一项公司信息、分析要求，或添加一份资料。"
@@ -2096,6 +2257,61 @@ def _friendly_metric_error(message: str) -> str:
     if "file is unavailable" in lowered or "file cannot be read" in lowered:
         name = text.split(":", 1)[0]
         return f"{name}：文件无法读取。"
+
+    truncation_markers = (
+        "指标生成结果疑似因输出长度限制被截断",
+        "output length",
+        "maximum output",
+        "max_tokens",
+        "finish_reason: length",
+    )
+    if any(marker in lowered for marker in truncation_markers):
+        return (
+            "Dify 生成的指标结果可能因输出长度限制被截断。"
+            "请缩短单次生成内容，或提高模型节点的最大输出长度后重试。"
+        )
+
+    json_markers = (
+        "jsondecodeerror",
+        "指标生成结果不是合法json",
+        "expecting ',' delimiter",
+        "expecting property name",
+        "unterminated string",
+        "invalid json",
+    )
+    if any(marker in lowered for marker in json_markers):
+        return (
+            "Dify 生成的指标结果格式不完整，未能完成解析。"
+            "请检查指标生成节点的结构化输出、最大输出长度和字段长度限制后重试。"
+        )
+
+    if "regulatory_review" in lowered or "regulatory indicator" in lowered:
+        return (
+            "第5号文专项结果不完整。请确认已按项目说明更新并发布 Dify "
+            "指标工作流后重试。"
+        )
+    if "regulatory applicability assessment" in lowered:
+        return (
+            "第5号文适用性判断未覆盖全部章节。请检查 Dify 指标工作流的"
+            "专项输出契约。"
+        )
+
+    sandbox_markers = (
+        "process exited with code",
+        "sandbox-python",
+        "traceback (most recent call last)",
+        'file "<fd3>"',
+    )
+    if any(marker in lowered for marker in sandbox_markers):
+        return (
+            "Dify 工作流内部节点执行失败。请在 Dify 运行日志中检查失败节点，"
+            "修正后重新运行。"
+        )
+
+    # Never render an unbounded backend traceback inside the desktop form.
+    max_length = 500
+    if len(text) > max_length:
+        return f"{text[:max_length]}……"
     return text
 
 
@@ -2137,7 +2353,7 @@ METRIC_DISCOVERY_STYLE = """
 QWidget#metricDiscoveryPage, QWidget#metricFormPage, QWidget#metricFormHost,
 QWidget#metricResultHost {
     background: #F7F9FC;
-    font-family: "Segoe UI";
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
 }
 QFrame#metricPageHeader {
     background: #FFFFFF;
@@ -2146,7 +2362,7 @@ QFrame#metricPageHeader {
 QLabel#metricPageTitle {
     color: #172033;
     font-size: 20px;
-    font-weight: 700;
+    font-weight: 600;
 }
 QScrollArea#metricFormScroll, QScrollArea#metricResultScroll {
     background: #F7F9FC;
@@ -2160,7 +2376,7 @@ QFrame#metricFormCard {
 QLabel#metricCardTitle {
     color: #1D2939;
     font-size: 14px;
-    font-weight: 700;
+    font-weight: 600;
 }
 QLabel#metricCardSubtitle, QLabel#metricFieldHint {
     color: #7A8594;
@@ -2170,7 +2386,7 @@ QLabel#metricCardSubtitle, QLabel#metricFieldHint {
 QLabel#metricFieldLabel {
     color: #344054;
     font-size: 12px;
-    font-weight: 650;
+    font-weight: 500;
 }
 QLineEdit#metricTextInput, QLineEdit#metricOtherInput,
 QLineEdit#metricDialogSearch, QPlainTextEdit#metricLongInput,
@@ -2265,7 +2481,7 @@ QFrame#metricResearchBox[enhanced="true"] {
 QLabel#metricResearchTitle {
     color: #1D2129;
     font-size: 12px;
-    font-weight: 650;
+    font-weight: 500;
 }
 QLabel#metricResearchHint {
     color: #86909C;
@@ -2278,7 +2494,7 @@ QLabel#metricResearchBadge {
     border-radius: 7px;
     padding: 1px 6px;
     font-size: 9px;
-    font-weight: 600;
+    font-weight: 500;
 }
 QFrame#metricSelectPopup {
     background: #FFFFFF;
@@ -2442,9 +2658,9 @@ QPushButton#metricResetButton {
     background: #FFFFFF;
     border: 1px solid #C9CDD4;
     border-radius: 7px;
-    padding: 7px 11px;
+    padding: 7px 12px;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 500;
 }
 QPushButton#metricResetButton:hover {
     color: #165DFF;

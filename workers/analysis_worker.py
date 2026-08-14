@@ -33,6 +33,7 @@ class AnalysisWorker(QObject):
         user_query: str = "",
         code: str = "",
         analysis_plan: dict[str, Any] | None = None,
+        remote_attempts_used: int = 0,
     ) -> None:
         super().__init__()
         self._mode = mode
@@ -40,6 +41,7 @@ class AnalysisWorker(QObject):
         self._user_query = user_query
         self._code = code
         self._analysis_plan = analysis_plan or {}
+        self._remote_attempts_used = max(0, int(remote_attempts_used))
         self._cancellation_token = CancellationToken()
 
     def cancel(self) -> None:
@@ -50,7 +52,10 @@ class AnalysisWorker(QObject):
     def run(self) -> None:
         try:
             logger.info("Analysis worker started mode=%s datasets=%s", self._mode, [file_meta.runtime_key for file_meta in self._files_meta])
-            workflow = AnalysisWorkflow(cancellation_token=self._cancellation_token)
+            workflow = AnalysisWorkflow(
+                cancellation_token=self._cancellation_token,
+                remote_attempts_used=self._remote_attempts_used,
+            )
             if self._mode == "prepare":
                 result = workflow.prepare_analysis(
                     self._files_meta,
@@ -91,6 +96,7 @@ class AnalysisWorker(QObject):
                     execution=None,
                     error=f"Unknown analysis worker mode: {self._mode}",
                 )
+            result.remote_attempts_used = workflow.remote_attempts_used
 
             if not self._cancellation_token.is_cancelled:
                 logger.info("Analysis worker finished mode=%s success=%s", self._mode, result.success)

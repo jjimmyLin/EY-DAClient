@@ -14,6 +14,7 @@ from core.analysis_contract import (
     GeneratedCodeContractValidator,
 )
 from core.code_validator import CodeValidator, SecurityError
+from core.data_quality import find_structural_data_issue
 from core.executor import ExecutionResult, Executor
 from core.preprocessor import FileMeta
 from core.prompt_builder import PromptBuilder
@@ -40,9 +41,15 @@ class WorkflowResult:
     overview_result: dict[str, Any] | None = None
     analysis_plan: dict[str, Any] | None = None
     preflight_only: bool = False
+    failure_kind: str = ""
+    remote_attempts_used: int = 0
 
 
 class JsonContractError(Exception):
+    pass
+
+
+class RemoteAttemptLimitError(Exception):
     pass
 
 
@@ -50,6 +57,7 @@ class AnalysisWorkflow:
     def __init__(
         self,
         cancellation_token: CancellationToken | None = None,
+        remote_attempts_used: int = 0,
     ) -> None:
         self._cancellation_token = cancellation_token or CancellationToken()
         self._client = get_client(cancellation_token=self._cancellation_token)
@@ -59,6 +67,15 @@ class AnalysisWorkflow:
         self._executor = Executor()
         self._prompt_builder = PromptBuilder()
         self._max_retries = settings.MAX_CODE_RETRIES
+        self._remote_attempt_limit = max(
+            1,
+            settings.MAX_ANALYSIS_REMOTE_ATTEMPTS,
+        )
+        self._remote_attempts_used = max(0, int(remote_attempts_used))
+
+    @property
+    def remote_attempts_used(self) -> int:
+        return self._remote_attempts_used
 
     def run(
         self,
@@ -89,7 +106,7 @@ class AnalysisWorkflow:
         )
         if generated.needs_clarification:
             return generated
-        if not generated.success and not generated.code:
+        if not generated.success:
             return generated
         preflight = self.execute_with_repair(
             generated.code,
@@ -125,6 +142,21 @@ class AnalysisWorkflow:
         user_query: str,
         event_callback: EventCallback | None = None,
     ) -> WorkflowResult:
+        structural_issue = find_structural_data_issue(files_meta)
+        if structural_issue is not None:
+            self._emit(
+                event_callback,
+                "status",
+                "Dataset structure requires correction before analysis",
+            )
+            return WorkflowResult(
+                False,
+                "",
+                None,
+                error=structural_issue.message,
+                failure_kind="data_structure",
+            )
+
         code = ""
         plan: dict[str, Any] = {}
         prompt = self._prompt_builder.build_analysis_prompt(
@@ -143,11 +175,11 @@ class AnalysisWorkflow:
                         else f"Repairing analysis plan ({attempt}/{self._max_retries})"
                     ),
                 )
+                generated = self._request_generation(
+                    prompt,
+                    event_callback=event_callback,
+                )
                 if hasattr(self._client, "generate_analysis"):
-                    generated = self._client.generate_analysis(
-                        prompt,
-                        event_callback=event_callback,
-                    )
                     plan = generated.get("plan") or {}
                     if generated.get("clarification_required"):
                         plan = {
@@ -189,10 +221,7 @@ class AnalysisWorkflow:
                         )
                     code = str(generated.get("code") or "")
                 else:
-                    code = self._client.generate_code(
-                        prompt,
-                        event_callback=event_callback,
-                    )
+                    code = str(generated.get("code") or "")
 
                 self._emit(event_callback, "status", "Validating generated code")
                 safety = self._validator.validate(code)
@@ -218,7 +247,24 @@ class AnalysisWorkflow:
                     validation_result={"is_safe": True, "violations": []},
                 )
             except AnalysisContractError as exc:
-                last_contract_error = str(exc)
+                current_contract_error = str(exc)
+                if (
+                    attempt > 0
+                    and current_contract_error == last_contract_error
+                ):
+                    return WorkflowResult(
+                        False,
+                        code,
+                        None,
+                        error=(
+                            "Analysis contract validation produced the same "
+                            f"error twice; further Dify repairs were stopped: {exc}"
+                        ),
+                        retries_used=attempt,
+                        analysis_plan=plan,
+                        failure_kind="analysis_contract",
+                    )
+                last_contract_error = current_contract_error
                 if attempt >= self._max_retries:
                     return WorkflowResult(
                         False,
@@ -230,6 +276,7 @@ class AnalysisWorkflow:
                         ),
                         retries_used=attempt,
                         analysis_plan=plan,
+                        failure_kind="analysis_contract",
                     )
                 prompt = self._prompt_builder.build_generation_repair_prompt(
                     files_meta,
@@ -247,6 +294,7 @@ class AnalysisWorkflow:
                     error=f"Security validation failed: {exc}",
                     retries_used=attempt,
                     analysis_plan=plan,
+                    failure_kind="security",
                 )
             except LLMError as exc:
                 return WorkflowResult(
@@ -256,6 +304,17 @@ class AnalysisWorkflow:
                     error=f"LLM API error: {exc}",
                     retries_used=attempt,
                     analysis_plan=plan,
+                    failure_kind="llm",
+                )
+            except RemoteAttemptLimitError as exc:
+                return WorkflowResult(
+                    False,
+                    code,
+                    None,
+                    error=str(exc),
+                    retries_used=attempt,
+                    analysis_plan=plan,
+                    failure_kind="attempt_limit",
                 )
         return WorkflowResult(
             False,
@@ -263,6 +322,7 @@ class AnalysisWorkflow:
             None,
             error=f"Analysis contract validation failed: {last_contract_error}",
             analysis_plan=plan,
+            failure_kind="analysis_contract",
         )
 
     def execute_only(
@@ -290,7 +350,7 @@ class AnalysisWorkflow:
                 files_meta,
                 analysis_plan or {},
             ).raise_if_invalid()
-        except (AnalysisContractError, SecurityError) as exc:
+        except AnalysisContractError as exc:
             return WorkflowResult(
                 False,
                 code,
@@ -298,6 +358,17 @@ class AnalysisWorkflow:
                 error=str(exc),
                 analysis_plan=analysis_plan or {},
                 preflight_only=sample,
+                failure_kind="analysis_contract",
+            )
+        except SecurityError as exc:
+            return WorkflowResult(
+                False,
+                code,
+                None,
+                error=str(exc),
+                analysis_plan=analysis_plan or {},
+                preflight_only=sample,
+                failure_kind="security",
             )
 
         execution = self._executor.run(
@@ -321,6 +392,7 @@ class AnalysisWorkflow:
             error="" if execution.success else execution.stderr,
             analysis_plan=analysis_plan or {},
             preflight_only=sample,
+            failure_kind="" if execution.success else "execution",
         )
 
     def execute_with_repair(
@@ -359,6 +431,12 @@ class AnalysisWorkflow:
                     ),
                 )
                 return last_result
+            if last_result.failure_kind in {
+                "analysis_contract",
+                "security",
+                "data_structure",
+            }:
+                return last_result
             if attempt >= self._max_retries:
                 break
 
@@ -377,23 +455,17 @@ class AnalysisWorkflow:
                     analysis_plan,
                     repair_number,
                 )
-                if hasattr(self._client, "generate_analysis"):
-                    repaired = self._client.generate_analysis(
-                        repair_prompt,
-                        event_callback=event_callback,
-                    )
-                    current_code = str(repaired.get("code") or "")
-                else:
-                    current_code = self._client.generate_code(
-                        repair_prompt,
-                        event_callback=event_callback,
-                    )
+                repaired = self._request_generation(
+                    repair_prompt,
+                    event_callback=event_callback,
+                )
+                current_code = str(repaired.get("code") or "")
                 self._validate_code(
                     current_code,
                     files_meta,
                     analysis_plan or {},
                 )
-            except (LLMError, SecurityError, AnalysisContractError) as exc:
+            except LLMError as exc:
                 return WorkflowResult(
                     False,
                     current_code,
@@ -402,6 +474,40 @@ class AnalysisWorkflow:
                     retries_used=repair_number,
                     analysis_plan=analysis_plan or {},
                     preflight_only=sample,
+                    failure_kind="llm",
+                )
+            except SecurityError as exc:
+                return WorkflowResult(
+                    False,
+                    current_code,
+                    last_result.execution,
+                    error=f"Automatic code correction failed: {exc}",
+                    retries_used=repair_number,
+                    analysis_plan=analysis_plan or {},
+                    preflight_only=sample,
+                    failure_kind="security",
+                )
+            except AnalysisContractError as exc:
+                return WorkflowResult(
+                    False,
+                    current_code,
+                    last_result.execution,
+                    error=f"Automatic code correction failed: {exc}",
+                    retries_used=repair_number,
+                    analysis_plan=analysis_plan or {},
+                    preflight_only=sample,
+                    failure_kind="analysis_contract",
+                )
+            except RemoteAttemptLimitError as exc:
+                return WorkflowResult(
+                    False,
+                    current_code,
+                    last_result.execution,
+                    error=str(exc),
+                    retries_used=repair_number,
+                    analysis_plan=analysis_plan or {},
+                    preflight_only=sample,
+                    failure_kind="attempt_limit",
                 )
 
         assert last_result is not None
@@ -411,6 +517,32 @@ class AnalysisWorkflow:
             f"{last_result.error}"
         )
         return last_result
+
+    def _request_generation(
+        self,
+        prompt: dict[str, str],
+        *,
+        event_callback: EventCallback | None,
+    ) -> dict[str, Any]:
+        if self._remote_attempts_used >= self._remote_attempt_limit:
+            raise RemoteAttemptLimitError(
+                "The analysis reached its remote workflow limit "
+                f"({self._remote_attempt_limit}). Further Dify workflows "
+                "were blocked."
+            )
+        self._remote_attempts_used += 1
+        if hasattr(self._client, "generate_analysis"):
+            return self._client.generate_analysis(
+                prompt,
+                event_callback=event_callback,
+            )
+        return {
+            "code": self._client.generate_code(
+                prompt,
+                event_callback=event_callback,
+            ),
+            "plan": {},
+        }
 
     def _validate_code(
         self,

@@ -70,6 +70,7 @@ from ui.metric_discovery_page import MetricDiscoveryPage
 from core.analysis_result import AnalysisResult
 from core.experience_payload import new_analysis_run_id, new_analysis_session_id
 from core.resume_monitor import ResumeMonitor
+from core.task_signal_relay import TaskSignalRelay
 from core.task_supervisor import TaskSupervisor
 from config.settings import settings
 from services.experience_service import ExperienceService
@@ -314,6 +315,9 @@ class MainWindow(QMainWindow):
         self._analysis_tasks = TaskSupervisor("analysis")
         self._metric_pipeline_generation = 0
         self._pending_metric_request = None
+        self._company_resolution_outcomes = {}
+        self._company_resolution_pipelines = {}
+        self._company_selection_dialog = None
         self._experience_submissions = ExperienceSubmissionQueue(self)
         self._experience_submissions.submitted.connect(
             self._on_experience_submission_finished
@@ -325,8 +329,7 @@ class MainWindow(QMainWindow):
         self._dataset_states = {}
         self._selected_datasets = set()
         self._active_mode = ""
-        self._background_analysis_mode = False
-        self._background_execute_pending = False
+        self._auto_execute_pending = False
         self._active_worker_mode = ""
         self._transcript = {}
         self._task_history = []
@@ -339,6 +342,8 @@ class MainWindow(QMainWindow):
         self._refresh_result_export_state()
         self._verified_code = ""
         self._verified_execution = None
+        self._code_apply_allowed = False
+        self._analysis_remote_attempts_used = 0
         self._last_applied_code = ""
         self._task_open = False
         self._dataset_overviews = {}
@@ -1060,54 +1065,97 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         runtime = self._company_resolution_tasks.activate(thread, worker)
         generation = runtime.generation
+        relay = TaskSignalRelay(
+            generation,
+            event_handler=self._on_company_resolution_event,
+            result_handler=self._capture_company_resolution_result,
+            error_handler=self._capture_company_resolution_error,
+            cancelled_handler=self._capture_company_resolution_cancelled,
+            thread_finished_handler=self._cleanup_company_resolution,
+            parent=self,
+        )
+        runtime.relay = relay
+        self._company_resolution_pipelines[generation] = pipeline_generation
         thread.started.connect(worker.run)
-        worker.event.connect(
-            lambda event, current=generation: (
-                self.metric_page.handle_event(event)
-                if self._company_resolution_tasks.is_active(current)
-                else None
-            )
-        )
-        worker.finished.connect(
-            lambda result, current=generation: (
-                self._on_company_resolution_finished(
-                    result,
-                    pipeline_generation,
-                )
-                if self._company_resolution_tasks.is_active(current)
-                else None
-            )
-        )
-        worker.error.connect(
-            lambda error, current=generation: (
-                self._on_company_resolution_failed(
-                    error,
-                    pipeline_generation,
-                )
-                if self._company_resolution_tasks.is_active(current)
-                else None
-            )
-        )
+        worker.event.connect(relay.handle_event, Qt.QueuedConnection)
+        worker.finished.connect(relay.handle_result, Qt.QueuedConnection)
+        worker.error.connect(relay.handle_error, Qt.QueuedConnection)
         worker.cancelled.connect(
-            lambda current=generation: (
-                self._on_company_resolution_cancelled()
-                if self._company_resolution_tasks.is_active(current)
-                else None
-            )
+            relay.handle_cancelled,
+            Qt.QueuedConnection,
         )
         worker.finished.connect(thread.quit)
         worker.error.connect(thread.quit)
         worker.cancelled.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
+        worker.finished.connect(worker.deleteLater)
+        worker.error.connect(worker.deleteLater)
+        worker.cancelled.connect(worker.deleteLater)
         thread.finished.connect(
-            lambda current=generation: self._cleanup_company_resolution(
-                current
-            )
+            relay.handle_thread_finished,
+            Qt.QueuedConnection,
         )
+        thread.finished.connect(relay.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         self._company_resolution_thread = thread
         self._company_resolution_worker = worker
         thread.start()
+
+    def _on_company_resolution_event(
+        self,
+        generation: int,
+        event: dict,
+    ) -> None:
+        if self._company_resolution_tasks.is_active(generation):
+            self.metric_page.handle_event(event)
+
+    def _capture_company_resolution_result(
+        self,
+        generation: int,
+        result,
+    ) -> None:
+        self._capture_company_resolution_outcome(
+            generation,
+            "finished",
+            result,
+        )
+
+    def _capture_company_resolution_error(
+        self,
+        generation: int,
+        error: str,
+    ) -> None:
+        self._capture_company_resolution_outcome(
+            generation,
+            "error",
+            error,
+        )
+
+    def _capture_company_resolution_cancelled(
+        self,
+        generation: int,
+    ) -> None:
+        self._capture_company_resolution_outcome(
+            generation,
+            "cancelled",
+            None,
+        )
+
+    def _capture_company_resolution_outcome(
+        self,
+        generation: int,
+        kind: str,
+        payload,
+    ) -> None:
+        pipeline_generation = self._company_resolution_pipelines.get(
+            generation
+        )
+        if pipeline_generation is None:
+            return
+        self._company_resolution_outcomes[generation] = (
+            kind,
+            payload,
+            pipeline_generation,
+        )
 
     def _on_company_resolution_finished(
         self,
@@ -1137,11 +1185,25 @@ class MainWindow(QMainWindow):
                 result.candidates,
                 self,
             )
-            if not dialog.exec():
+            self._company_selection_dialog = dialog
+            try:
+                accepted = bool(dialog.exec())
+            finally:
+                if self._company_selection_dialog is dialog:
+                    self._company_selection_dialog = None
+            if pipeline_generation != self._metric_pipeline_generation:
+                return
+            if not accepted:
                 self._pending_metric_request = None
                 self.metric_page.resume_after_company_selection_cancel()
                 return
             candidate = dialog.selected_candidate()
+            if candidate is None:
+                self._pending_metric_request = None
+                self.metric_page.show_error(
+                    "未能读取所选工商主体，请重新选择。"
+                )
+                return
 
         if candidate is not None:
             original_query = (
@@ -1150,10 +1212,18 @@ class MainWindow(QMainWindow):
                     request.company_information.get("company_name") or ""
                 ).strip()
             )
-            request = request.with_selected_company(
-                candidate.to_payload(),
-                original_query=original_query,
-            )
+            try:
+                request = request.with_selected_company(
+                    candidate.to_payload(),
+                    original_query=original_query,
+                )
+            except Exception as exc:
+                logger.exception("Unable to apply selected company")
+                self._pending_metric_request = None
+                self.metric_page.show_error(
+                    f"无法应用所选工商主体：{exc}"
+                )
+                return
             self.metric_page.apply_company_selection(
                 candidate,
                 original_query,
@@ -1173,15 +1243,8 @@ class MainWindow(QMainWindow):
             )
 
         self._pending_metric_request = None
-        QTimer.singleShot(
-            0,
-            lambda pending_request=request, current=pipeline_generation: (
-                self._launch_metric_request_if_current(
-                    pending_request,
-                    current,
-                )
-            ),
-        )
+        if pipeline_generation == self._metric_pipeline_generation:
+            self._launch_metric_worker(request)
 
     def _on_company_resolution_failed(
         self,
@@ -1207,24 +1270,8 @@ class MainWindow(QMainWindow):
                 "message": "工商主体预检不可用，正在按原名称继续",
             }
         )
-        QTimer.singleShot(
-            0,
-            lambda pending_request=request, current=pipeline_generation: (
-                self._launch_metric_request_if_current(
-                    pending_request,
-                    current,
-                )
-            ),
-        )
-
-    def _launch_metric_request_if_current(
-        self,
-        request,
-        pipeline_generation: int,
-    ) -> None:
-        if pipeline_generation != self._metric_pipeline_generation:
-            return
-        self._launch_metric_worker(request)
+        if pipeline_generation == self._metric_pipeline_generation:
+            self._launch_metric_worker(request)
 
     def _on_company_resolution_cancelled(self) -> None:
         self._pending_metric_request = None
@@ -1232,15 +1279,31 @@ class MainWindow(QMainWindow):
 
     def _cleanup_company_resolution(
         self,
-        generation: int | None = None,
+        generation: int,
     ) -> None:
-        if generation is None:
-            generation = self._company_resolution_tasks.active_generation
-        if generation is None:
-            return
-        if self._company_resolution_tasks.finish(generation):
+        was_active = self._company_resolution_tasks.finish(generation)
+        outcome = self._company_resolution_outcomes.pop(generation, None)
+        self._company_resolution_pipelines.pop(generation, None)
+        if was_active:
             self._company_resolution_thread = None
             self._company_resolution_worker = None
+        if not was_active or outcome is None:
+            return
+        kind, payload, pipeline_generation = outcome
+        if pipeline_generation != self._metric_pipeline_generation:
+            return
+        if kind == "finished":
+            self._on_company_resolution_finished(
+                payload,
+                pipeline_generation,
+            )
+        elif kind == "error":
+            self._on_company_resolution_failed(
+                str(payload),
+                pipeline_generation,
+            )
+        else:
+            self._on_company_resolution_cancelled()
 
     def _launch_metric_worker(self, request) -> None:
         if self._metric_tasks.active_runtime is not None:
@@ -1250,40 +1313,56 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         runtime = self._metric_tasks.activate(thread, worker)
         generation = runtime.generation
+        relay = TaskSignalRelay(
+            generation,
+            event_handler=self._on_metric_worker_event,
+            result_handler=self._on_metric_worker_finished,
+            error_handler=self._on_metric_worker_error,
+            thread_finished_handler=self._cleanup_metric_discovery,
+            parent=self,
+        )
+        runtime.relay = relay
         thread.started.connect(worker.run)
-        worker.event.connect(
-            lambda event, current=generation: (
-                self.metric_page.handle_event(event)
-                if self._metric_tasks.is_active(current)
-                else None
-            )
-        )
-        worker.finished.connect(
-            lambda result, current=generation: (
-                self._on_metric_discovery_finished(result)
-                if self._metric_tasks.is_active(current)
-                else None
-            )
-        )
-        worker.error.connect(
-            lambda error, current=generation: (
-                self._on_metric_discovery_failed(error)
-                if self._metric_tasks.is_active(current)
-                else None
-            )
-        )
+        worker.event.connect(relay.handle_event, Qt.QueuedConnection)
+        worker.finished.connect(relay.handle_result, Qt.QueuedConnection)
+        worker.error.connect(relay.handle_error, Qt.QueuedConnection)
         worker.finished.connect(thread.quit)
         worker.error.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
+        worker.finished.connect(worker.deleteLater)
+        worker.error.connect(worker.deleteLater)
         thread.finished.connect(
-            lambda current=generation: self._cleanup_metric_discovery(
-                current
-            )
+            relay.handle_thread_finished,
+            Qt.QueuedConnection,
         )
+        thread.finished.connect(relay.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         self._metric_thread = thread
         self._metric_worker = worker
         thread.start()
+
+    def _on_metric_worker_event(
+        self,
+        generation: int,
+        event: dict,
+    ) -> None:
+        if self._metric_tasks.is_active(generation):
+            self.metric_page.handle_event(event)
+
+    def _on_metric_worker_finished(
+        self,
+        generation: int,
+        result,
+    ) -> None:
+        if self._metric_tasks.is_active(generation):
+            self._on_metric_discovery_finished(result)
+
+    def _on_metric_worker_error(
+        self,
+        generation: int,
+        error: str,
+    ) -> None:
+        if self._metric_tasks.is_active(generation):
+            self._on_metric_discovery_failed(error)
 
     def _on_metric_discovery_finished(self, result) -> None:
         self.metric_page.show_result(result)
@@ -1303,7 +1382,14 @@ class MainWindow(QMainWindow):
 
     def _retire_metric_pipeline(self, *, superseded: bool) -> bool:
         self._metric_pipeline_generation += 1
-        retired = False
+        retired = self._pending_metric_request is not None
+        dialog = self._company_selection_dialog
+        if dialog is not None:
+            retired = True
+            try:
+                dialog.reject()
+            except RuntimeError:
+                pass
         metric_runtime = self._metric_tasks.retire_active(
             superseded=superseded
         )
@@ -1330,12 +1416,8 @@ class MainWindow(QMainWindow):
 
     def _cleanup_metric_discovery(
         self,
-        generation: int | None = None,
+        generation: int,
     ) -> None:
-        if generation is None:
-            generation = self._metric_tasks.active_generation
-        if generation is None:
-            return
         if self._metric_tasks.finish(generation):
             self._metric_thread = None
             self._metric_worker = None
@@ -1927,15 +2009,6 @@ class MainWindow(QMainWindow):
             if name in self._selected_datasets
         ]
 
-    @staticmethod
-    def _uses_background_analysis(files_meta: list) -> bool:
-        return any(
-            file_meta.file_size_kb >= settings.BACKGROUND_ANALYSIS_MB * 1024
-            or sum(sheet.rows for sheet in file_meta.sheets)
-            >= settings.BACKGROUND_ANALYSIS_ROWS
-            for file_meta in files_meta
-        )
-
     def _remove_dataset(self, dataset_name: str) -> None:
         item = self._find_dataset_item(dataset_name)
         if item is None:
@@ -1983,6 +2056,8 @@ class MainWindow(QMainWindow):
                 self._refresh_result_export_state()
                 self._verified_code = ""
                 self._verified_execution = None
+                self._code_apply_allowed = False
+                self._analysis_remote_attempts_used = 0
                 self._render_analysis_plan()
                 self.code_editor.clear()
                 self._set_python_tab_visible(False)
@@ -2353,7 +2428,7 @@ class MainWindow(QMainWindow):
         return suggestions
 
     def _on_analyze_clicked(self):
-        """Generate analysis code and prepare it for review/editing."""
+        """Generate, preflight, and automatically execute analysis code."""
         if not self._task_open:
             return
 
@@ -2381,6 +2456,9 @@ class MainWindow(QMainWindow):
         self._refresh_result_export_state()
         self._verified_code = ""
         self._verified_execution = None
+        self._code_apply_allowed = False
+        self._analysis_remote_attempts_used = 0
+        self._auto_execute_pending = False
         self._last_applied_code = ""
         self._render_analysis_plan()
         self.code_editor.clear()
@@ -2392,18 +2470,11 @@ class MainWindow(QMainWindow):
             name for name in self.loaded_files if name in self._selected_datasets
         ]
         dataset_label = ", ".join(selected_names)
-        self._background_analysis_mode = self._uses_background_analysis(
-            selected_files
-        )
         self._create_history_task(dataset_label, query)
         self.log_output.append(
             f"Using mode: {self._current_model_label()}"
         )
-        self.log_output.append(
-            "Background analysis queued..."
-            if self._background_analysis_mode
-            else "Generating Python code..."
-        )
+        self.log_output.append("Generating Python code...")
         self.result_output.setText("Waiting for analysis result.")
         self._collapse_composer("busy")
         self._close_context_panel()
@@ -2479,8 +2550,9 @@ class MainWindow(QMainWindow):
         self._current_analysis_result = None
         self._verified_code = ""
         self._verified_execution = None
-        self._background_analysis_mode = False
-        self._background_execute_pending = False
+        self._code_apply_allowed = False
+        self._analysis_remote_attempts_used = 0
+        self._auto_execute_pending = False
         self._render_analysis_plan()
         self._active_worker_mode = ""
         self._active_task_id = None
@@ -2737,19 +2809,6 @@ class MainWindow(QMainWindow):
                 if runtime.thread.isRunning():
                     runtime.thread.quit()
                     runtime.thread.wait(3000)
-        if self._company_resolution_worker is not None:
-            self._company_resolution_worker.cancel()
-        if (
-            self._company_resolution_thread is not None
-            and self._company_resolution_thread.isRunning()
-        ):
-            self._company_resolution_thread.quit()
-            self._company_resolution_thread.wait(3000)
-        if self._metric_worker is not None:
-            self._metric_worker.cancel()
-        if self._metric_thread is not None and self._metric_thread.isRunning():
-            self._metric_thread.quit()
-            self._metric_thread.wait(3000)
         if self._export_worker is not None:
             self._export_worker.cancel()
         if self._export_thread is not None and self._export_thread.isRunning():
@@ -2765,11 +2824,6 @@ class MainWindow(QMainWindow):
         if self._import_thread is not None and self._import_thread.isRunning():
             self._import_thread.quit()
             self._import_thread.wait(3000)
-        if self._analysis_worker is not None:
-            self._analysis_worker.cancel()
-        if self._analysis_thread is not None and self._analysis_thread.isRunning():
-            self._analysis_thread.quit()
-            self._analysis_thread.wait(3000)
         self._stop_overview_worker()
         self.overview_popover.hide()
         self._hide_suggestion_popover()
@@ -2926,11 +2980,19 @@ class MainWindow(QMainWindow):
         self._pending_query = task.get("query", "")
         self._generated_code = task.get("generated_code") or code
         self._analysis_plan = task.get("analysis_plan") or {}
+        self._analysis_remote_attempts_used = max(
+            0,
+            int(task.get("remote_attempts_used") or 0),
+        )
         result_payload = task.get("analysis_result") or {}
         self._current_analysis_result = (
             AnalysisResult.from_dict(result_payload)
             if result_payload
             else None
+        )
+        self._code_apply_allowed = bool(
+            task.get("code_validated")
+            or self._current_analysis_result is not None
         )
         self._refresh_result_export_state()
         self._active_worker_mode = ""
@@ -2956,7 +3018,10 @@ class MainWindow(QMainWindow):
 
         if code:
             self._set_python_tab_visible(True)
-            self._show_apply_action(retry=True)
+            if self._code_apply_allowed:
+                self._show_apply_action(retry=True)
+            else:
+                self._show_analyze_action()
             self.analysis_tabs.setCurrentIndex(1 if error else 0)
         else:
             self._set_python_tab_visible(False)
@@ -3005,10 +3070,12 @@ class MainWindow(QMainWindow):
             return f"DevOps · {settings.GEMINI_MODEL}"
 
     def _run_generate(self):
-        """Generate, preflight, and repair code before presenting it."""
+        """Generate, repair, and preflight code before automatic execution."""
         if not self._pending_query or not self._pending_files_meta:
             return
 
+        self._code_apply_allowed = False
+        self._analysis_remote_attempts_used = 0
         self._reset_transcript()
         self._append_system_event("Generating and validating code...")
         self._start_analysis_worker(
@@ -3024,6 +3091,9 @@ class MainWindow(QMainWindow):
         self.code_apply_btn.setVisible(False)
 
     def _show_apply_action(self, retry: bool = False) -> None:
+        if not self._code_apply_allowed:
+            self.code_apply_btn.setVisible(False)
+            return
         self._set_python_tab_visible(True)
         self.run_btn.setVisible(True)
         self.code_apply_btn.setVisible(True)
@@ -3033,6 +3103,13 @@ class MainWindow(QMainWindow):
     def _on_apply_clicked(self):
         """Execute the code currently in the editor."""
         if not self._pending_files_meta:
+            return
+        if not self._code_apply_allowed:
+            self.code_apply_btn.setVisible(False)
+            self._append_system_event(
+                "This code did not pass validation and cannot be applied. "
+                "Run Analyze again after correcting the dataset or request."
+            )
             return
 
         code = self.code_editor.toPlainText().strip()
@@ -3090,45 +3167,63 @@ class MainWindow(QMainWindow):
             user_query=user_query,
             code=code,
             analysis_plan=analysis_plan,
+            remote_attempts_used=self._analysis_remote_attempts_used,
         )
         worker.moveToThread(thread)
         runtime = self._analysis_tasks.activate(thread, worker)
         generation = runtime.generation
+        relay = TaskSignalRelay(
+            generation,
+            event_handler=self._on_analysis_worker_event,
+            result_handler=self._on_analysis_worker_finished,
+            error_handler=self._on_analysis_worker_error,
+            thread_finished_handler=self._cleanup_worker,
+            parent=self,
+        )
+        runtime.relay = relay
 
         thread.started.connect(worker.run)
-        worker.event.connect(
-            lambda event, current=generation: (
-                self._on_worker_event(event)
-                if self._analysis_tasks.is_active(current)
-                else None
-            )
-        )
-        worker.finished.connect(
-            lambda result, current=generation: (
-                self._on_worker_finished(result)
-                if self._analysis_tasks.is_active(current)
-                else None
-            )
-        )
-        worker.error.connect(
-            lambda error, current=generation: (
-                self._on_worker_error(error)
-                if self._analysis_tasks.is_active(current)
-                else None
-            )
-        )
+        worker.event.connect(relay.handle_event, Qt.QueuedConnection)
+        worker.finished.connect(relay.handle_result, Qt.QueuedConnection)
+        worker.error.connect(relay.handle_error, Qt.QueuedConnection)
         worker.finished.connect(thread.quit)
         worker.error.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         worker.error.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
         thread.finished.connect(
-            lambda current=generation: self._cleanup_worker(current)
+            relay.handle_thread_finished,
+            Qt.QueuedConnection,
         )
+        thread.finished.connect(relay.deleteLater)
+        thread.finished.connect(thread.deleteLater)
 
         self._analysis_thread = thread
         self._analysis_worker = worker
         thread.start()
+
+    def _on_analysis_worker_event(
+        self,
+        generation: int,
+        event: dict,
+    ) -> None:
+        if self._analysis_tasks.is_active(generation):
+            self._on_worker_event(event)
+
+    def _on_analysis_worker_finished(
+        self,
+        generation: int,
+        result,
+    ) -> None:
+        if self._analysis_tasks.is_active(generation):
+            self._on_worker_finished(result)
+
+    def _on_analysis_worker_error(
+        self,
+        generation: int,
+        error: str,
+    ) -> None:
+        if self._analysis_tasks.is_active(generation):
+            self._on_worker_error(error)
 
     def _on_worker_event(self, event: dict) -> None:
         event_type = event.get("type", "status")
@@ -3157,6 +3252,13 @@ class MainWindow(QMainWindow):
         self._render_transcript()
 
     def _on_worker_finished(self, result) -> None:
+        self._analysis_remote_attempts_used = max(
+            self._analysis_remote_attempts_used,
+            int(getattr(result, "remote_attempts_used", 0) or 0),
+        )
+        task = self._find_history_task(self._active_task_id)
+        if task is not None:
+            task["remote_attempts_used"] = self._analysis_remote_attempts_used
         if self._active_worker_mode in {"prepare", "generate"}:
             if result.needs_clarification:
                 self._analysis_plan = result.analysis_plan or {}
@@ -3188,6 +3290,7 @@ class MainWindow(QMainWindow):
                     result=result.clarification_question,
                 )
             elif result.success:
+                self._code_apply_allowed = True
                 self._generated_code = result.code
                 self._analysis_plan = result.analysis_plan or {}
                 self._verified_code = result.code
@@ -3201,59 +3304,36 @@ class MainWindow(QMainWindow):
                     self.log_output.append(
                         f"Code was automatically corrected {result.retries_used} time(s)."
                     )
-                if self._background_analysis_mode:
-                    self._background_execute_pending = True
-                    self._append_system_event(
-                        "Sample preflight passed. Full analysis is queued in the background."
-                    )
-                    self._transcript["execution"] = (
-                        "The large-dataset preflight passed. Full local analysis "
-                        "will continue automatically; code remains available in "
-                        "the Python tab."
-                    )
-                    self._set_python_tab_visible(True)
-                    self.analysis_tabs.setCurrentIndex(0)
-                    self.run_btn.setVisible(True)
-                    self.run_btn.setEnabled(False)
-                    self.run_btn.setText("Queued")
-                    self.code_apply_btn.setVisible(False)
-                    self._update_history_task(
-                        "Queued",
-                        finished=False,
-                        generated_code=result.code,
-                        code=result.code,
-                        analysis_plan=self._analysis_plan,
-                        repair_count=int(result.retries_used or 0),
-                        result=self._transcript["execution"],
-                        error="",
-                    )
-                    self._render_transcript()
-                    self._set_busy(False)
-                    return
+                self._auto_execute_pending = True
                 self._append_system_event(
-                    "Code passed sample preflight. Review it before Apply."
-                )
-                self.log_output.append(
-                    "Code passed sample preflight and is ready for full execution."
+                    "Sample preflight passed. Full analysis is queued."
                 )
                 self._transcript["execution"] = (
                     "Python code passed representative sample preflight. "
-                    "Review it, then click Apply to run the complete datasets."
+                    "Full local analysis will continue automatically; code "
+                    "remains available in the Python tab."
                 )
                 self._set_python_tab_visible(True)
-                self.analysis_tabs.setCurrentIndex(self.python_tab_index)
-                self._show_apply_action()
-                self._set_composer_state("code")
+                self.analysis_tabs.setCurrentIndex(0)
+                self.run_btn.setVisible(True)
+                self.run_btn.setEnabled(False)
+                self.run_btn.setText("Queued")
+                self.code_apply_btn.setVisible(False)
                 self._update_history_task(
-                    "Awaiting Apply",
+                    "Queued",
+                    finished=False,
                     generated_code=result.code,
                     code=result.code,
                     analysis_plan=self._analysis_plan,
                     repair_count=int(result.retries_used or 0),
-                    result="Python code passed sample preflight and is ready for Apply.",
+                    code_validated=True,
+                    result=self._transcript["execution"],
                     error="",
                 )
+                self._render_transcript()
+                return
             else:
+                self._code_apply_allowed = False
                 self._verified_code = ""
                 self._verified_execution = None
                 self._set_composer_state("error")
@@ -3265,12 +3345,12 @@ class MainWindow(QMainWindow):
                     self.code_editor.setPlainText(result.code)
                     self._render_analysis_plan()
                     self._transcript["execution"] = (
-                        "Automatic correction could not produce runnable code. "
-                        "Review the Python code or click Apply again to retry."
+                        "Automatic correction could not produce validated code. "
+                        "Correct the dataset or request, then run Analyze again."
                     )
                     self._set_python_tab_visible(True)
                     self.analysis_tabs.setCurrentIndex(1)
-                    self._show_apply_action(retry=True)
+                    self._show_analyze_action()
                     self._update_history_task(
                         "Needs correction",
                         result.error,
@@ -3278,6 +3358,7 @@ class MainWindow(QMainWindow):
                         generated_code=result.code,
                         code=result.code,
                         analysis_plan=self._analysis_plan,
+                        code_validated=False,
                         result=self._transcript["execution"],
                         error=result.error,
                     )
@@ -3301,6 +3382,7 @@ class MainWindow(QMainWindow):
 
         elif self._active_worker_mode == "execute":
             if result.success:
+                self._code_apply_allowed = True
                 task = self._find_history_task(self._active_task_id)
                 if task is not None:
                     task["repair_count"] = (
@@ -3319,6 +3401,10 @@ class MainWindow(QMainWindow):
                 self._verified_execution = None
                 self._present_execution_result(result.code, result.execution)
             else:
+                failure_kind = str(
+                    getattr(result, "failure_kind", "") or ""
+                )
+                self._code_apply_allowed = failure_kind == "execution"
                 self._verified_code = ""
                 self._verified_execution = None
                 self._set_composer_state("error")
@@ -3331,25 +3417,37 @@ class MainWindow(QMainWindow):
                 )
                 self._append_system_event("Execution failed")
                 self.log_output.append(f"Execution detail: {error_text}")
-                self._transcript["execution"] = (
-                    "The Python code could not be executed after automatic correction.\n"
-                    "Review or reset the code, then click Apply again."
-                )
+                if self._code_apply_allowed:
+                    self._transcript["execution"] = (
+                        "The Python code could not be executed after automatic "
+                        "correction.\nReview or reset the code, then click Apply again."
+                    )
+                else:
+                    self._transcript["execution"] = (
+                        "The Python code or analysis plan failed validation and "
+                        "cannot be applied. Correct the dataset or request, then "
+                        "run Analyze again."
+                    )
                 self._set_python_tab_visible(True)
                 self._update_history_task(
                     "Needs correction",
                     finished=False,
                     code=self.code_editor.toPlainText().strip(),
+                    code_validated=self._code_apply_allowed,
                     result=self._transcript["execution"],
                     error=error_text,
                 )
                 self.analysis_tabs.setCurrentIndex(1)
-                self._show_apply_action(retry=True)
+                if self._code_apply_allowed:
+                    self._show_apply_action(retry=True)
+                else:
+                    self._show_analyze_action()
 
         self._render_transcript()
         self._set_busy(False)
 
     def _present_execution_result(self, code: str, execution) -> None:
+        self._code_apply_allowed = True
         self._last_applied_code = code.strip()
         output_text = execution.stdout if execution else ""
         analysis_result = (
@@ -3387,6 +3485,7 @@ class MainWindow(QMainWindow):
             analysis_result=analysis_result.to_dict(),
             analysis_run_id=analysis_run_id,
             analysis_verified=analysis_verified,
+            code_validated=True,
             manual_edit=manual_edit,
             error="",
         )
@@ -3550,6 +3649,7 @@ class MainWindow(QMainWindow):
         self._refresh_history_page()
 
     def _on_worker_error(self, error: str) -> None:
+        self._code_apply_allowed = False
         self._append_system_event(f"Worker error: {error}")
         self.log_output.append(f"Worker detail: {error}")
         self._set_composer_state("error")
@@ -3560,11 +3660,12 @@ class MainWindow(QMainWindow):
             )
             self._set_python_tab_visible(True)
             self.analysis_tabs.setCurrentIndex(1)
-            self._show_apply_action(retry=True)
+            self._show_analyze_action()
             self._update_history_task(
                 "Needs correction",
                 finished=False,
                 code=self.code_editor.toPlainText().strip(),
+                code_validated=False,
                 result=self._transcript["execution"],
                 error=error,
             )
@@ -3589,12 +3690,17 @@ class MainWindow(QMainWindow):
     def _cancel_analysis(self) -> None:
         if not self._retire_analysis_task(superseded=False):
             return
-        self._append_system_event("Analysis cancelled")
+        self._append_system_event(
+            "Analysis cancelled locally; remote termination was requested."
+        )
         self.log_output.append("Analysis cancellation requested.")
         self._update_history_task(
-            "Cancelled",
+            "Cancellation requested",
             finished=True,
-            result="Analysis cancelled.",
+            result=(
+                "Local analysis stopped. Dify termination was requested and "
+                "is verified in the background worker."
+            ),
             error="",
         )
 
@@ -3610,24 +3716,20 @@ class MainWindow(QMainWindow):
         self._analysis_thread = None
         self._analysis_worker = None
         self._active_worker_mode = ""
-        self._background_execute_pending = False
+        self._auto_execute_pending = False
         self._set_busy(False)
         return True
 
-    def _cleanup_worker(self, generation: int | None = None) -> None:
-        if generation is None:
-            generation = self._analysis_tasks.active_generation
-        if generation is None:
-            return
+    def _cleanup_worker(self, generation: int) -> None:
         was_active = self._analysis_tasks.finish(generation)
         if not was_active:
             return
         self._analysis_thread = None
         self._analysis_worker = None
         self._active_worker_mode = ""
-        if self._background_execute_pending:
-            self._background_execute_pending = False
-            self._append_system_event("Running full analysis in the background...")
+        if self._auto_execute_pending:
+            self._auto_execute_pending = False
+            self._append_system_event("Running full analysis...")
             self._start_analysis_worker(
                 mode="execute",
                 files_meta=self._pending_files_meta or [],
@@ -3962,7 +4064,7 @@ class MainWindow(QMainWindow):
         self.code_editor.document().setModified(False)
         self._set_python_tab_visible(True)
         self.analysis_tabs.setCurrentIndex(1)
-        if self._pending_files_meta:
+        if self._pending_files_meta and self._code_apply_allowed:
             self._show_apply_action(retry=True)
 
     def _on_code_text_changed(self) -> None:
@@ -3970,7 +4072,12 @@ class MainWindow(QMainWindow):
         python_available = self.analysis_tabs.tabBar().isTabVisible(
             self.python_tab_index
         )
-        if self._pending_files_meta and code and code != self._last_applied_code:
+        if (
+            self._code_apply_allowed
+            and self._pending_files_meta
+            and code
+            and code != self._last_applied_code
+        ):
             if not python_available:
                 return
             self._show_apply_action(retry=self._current_analysis_result is not None)
@@ -4188,7 +4295,7 @@ class MainWindow(QMainWindow):
                 color: #5F6368;
                 border: 1px solid transparent;
                 border-radius: 7px;
-                font-family: "Segoe UI Emoji", "Segoe UI Symbol", "Segoe UI";
+                font-family: "Segoe UI Emoji", "Segoe UI Symbol", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
                 font-size: 14px;
                 font-weight: 400;
                 padding: 0;
@@ -4291,9 +4398,9 @@ class MainWindow(QMainWindow):
             }
 
             QLabel {
-                font-family: "Segoe UI";
+                font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
                 font-size: 11px;
-                font-weight: 700;
+                font-weight: 400;
                 letter-spacing: 0;
                 color: #5F6368;
             }
@@ -4649,7 +4756,10 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    from ui.fonts import configure_application_font
+
     app = QApplication(sys.argv)
+    configure_application_font(app)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

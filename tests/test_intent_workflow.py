@@ -8,7 +8,7 @@ from core.executor import Executor
 from core.code_validator import CodeValidator
 from core.preprocessor import Preprocessor
 from core.prompt_builder import PromptBuilder
-from dify.workflow import AnalysisWorkflow
+from dify.workflow import AnalysisWorkflow, WorkflowResult
 
 
 class FakeClient:
@@ -222,6 +222,163 @@ result.mark_requirement("R1")
     assert len(fake.prompts) == 2
     assert fake.prompts[1]["task_type"] == "analysis"
     assert "generation_validation_error" in fake.prompts[1]["context"]
+
+
+def test_prepare_does_not_execute_code_from_failed_generation(
+    tmp_path,
+    monkeypatch,
+):
+    workflow = AnalysisWorkflow()
+    generated = WorkflowResult(
+        False,
+        "print('must not run')",
+        None,
+        error="invalid analysis plan",
+        failure_kind="analysis_contract",
+    )
+    monkeypatch.setattr(
+        workflow,
+        "generate_only",
+        lambda *args, **kwargs: generated,
+    )
+
+    def fail_if_executed(*args, **kwargs):
+        raise AssertionError("failed generation entered preflight")
+
+    monkeypatch.setattr(workflow, "execute_with_repair", fail_if_executed)
+
+    result = workflow.prepare_analysis(
+        _files_meta(tmp_path),
+        "Calculate total revenue",
+    )
+
+    assert result is generated
+
+
+def test_single_column_delimited_records_are_blocked_before_dify(
+    tmp_path,
+    monkeypatch,
+):
+    files_meta = _files_meta(tmp_path)
+    sheet = files_meta[0].sheets[0]
+    header = "c1|c2|c3|c4|c5|c6"
+    sheet.cols = 1
+    sheet.columns = [header]
+    sheet.head_sample = [
+        {header: "1|2|3|4|5|6"},
+        {header: "7|8|9|10|11|12"},
+        {header: "13|14|15|16|17|18"},
+    ]
+    fake = SequentialAnalysisClient([])
+    monkeypatch.setattr(
+        workflow_module,
+        "get_client",
+        lambda cancellation_token=None: fake,
+    )
+
+    result = AnalysisWorkflow().generate_only(
+        files_meta,
+        "Analyze c3",
+    )
+
+    assert not result.success
+    assert result.failure_kind == "data_structure"
+    assert "no Dify workflow was started" in result.error
+    assert fake.prompts == []
+
+
+def test_identical_plan_error_stops_repair_loop_early(
+    tmp_path,
+    monkeypatch,
+):
+    files_meta = _files_meta(tmp_path)
+    invalid_plan = {
+        "task_summary": "Broken",
+        "requirements": [],
+        "warnings": [],
+        "clarification_required": False,
+        "clarification_question": "",
+        "clarification_options": [],
+    }
+    fake = SequentialAnalysisClient(
+        [
+            {"code": "print('first')", "plan": invalid_plan},
+            {"code": "print('second')", "plan": invalid_plan},
+            {"code": "print('must not be requested')", "plan": invalid_plan},
+        ]
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "get_client",
+        lambda cancellation_token=None: fake,
+    )
+
+    result = AnalysisWorkflow().generate_only(
+        files_meta,
+        "Calculate total revenue",
+    )
+
+    assert not result.success
+    assert result.failure_kind == "analysis_contract"
+    assert "same error twice" in result.error
+    assert len(fake.prompts) == 2
+
+
+def test_analysis_has_one_shared_remote_workflow_budget(
+    tmp_path,
+    monkeypatch,
+):
+    files_meta = _files_meta(tmp_path)
+    invalid_plans = [
+        {
+            "requirements": [],
+            "clarification_required": False,
+        },
+        {
+            "requirements": [{"id": "R1", "sources": []}],
+            "clarification_required": False,
+        },
+        {
+            "requirements": [
+                {
+                    "id": "R1",
+                    "sources": [
+                        {
+                            "dataset_id": "unknown",
+                            "sheet_id": "unknown",
+                            "columns": ["unknown"],
+                        }
+                    ],
+                }
+            ],
+            "clarification_required": False,
+        },
+        _analysis_plan(files_meta),
+    ]
+    fake = SequentialAnalysisClient(
+        [
+            {"code": "print('one')", "plan": invalid_plans[0]},
+            {"code": "print('two')", "plan": invalid_plans[1]},
+            {"code": "print('three')", "plan": invalid_plans[2]},
+            {"code": "print('must not run')", "plan": invalid_plans[3]},
+        ]
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "get_client",
+        lambda cancellation_token=None: fake,
+    )
+
+    workflow = AnalysisWorkflow()
+    result = workflow.generate_only(
+        files_meta,
+        "Calculate total revenue",
+    )
+
+    assert not result.success
+    assert result.failure_kind == "attempt_limit"
+    assert workflow.remote_attempts_used == 3
+    assert len(fake.prompts) == 3
 
 
 def test_intent_coverage_rejects_missing_explicit_user_item(tmp_path):

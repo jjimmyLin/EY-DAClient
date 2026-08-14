@@ -16,7 +16,20 @@ from core.analysis_result import (
 )
 from config.settings import settings
 from core.executor import ExecutionResult
+from ui.fonts import CHINESE_UI_FONT_FAMILIES, configure_application_font
 from ui.main_window import MainWindow
+
+
+def test_application_uses_explicit_chinese_ui_font_fallbacks(qapp):
+    original_font = qapp.font()
+    try:
+        configure_application_font(qapp)
+        assert qapp.font().families() == list(
+            CHINESE_UI_FONT_FAMILIES[:-1]
+        )
+        assert qapp.font().families()[0] == "Microsoft YaHei UI"
+    finally:
+        qapp.setFont(original_font)
 
 
 def test_start_page_is_data_first_and_unlocks_capabilities(qapp):
@@ -166,7 +179,7 @@ def test_import_validation_rejects_oversized_file_without_starting_worker(
     window.close()
 
 
-def test_preflight_ready_opens_python_and_apply_tracks_edits(qapp):
+def test_preflight_ready_queues_execution_and_apply_tracks_later_edits(qapp):
     window = MainWindow()
     window.show()
     window._start_new_task()
@@ -195,8 +208,12 @@ def test_preflight_ready_opens_python_and_apply_tracks_edits(qapp):
     window._on_worker_finished(result)
     qapp.processEvents()
 
-    assert window.analysis_tabs.currentIndex() == window.python_tab_index
-    assert window.code_apply_btn.isVisible()
+    assert window.analysis_tabs.currentIndex() == 0
+    assert window._auto_execute_pending
+    assert window.analysis_tabs.tabBar().isTabVisible(window.python_tab_index)
+    assert not window.code_apply_btn.isVisible()
+    assert not window.run_btn.isEnabled()
+    assert window.run_btn.text() == "Queued"
     assert window.code_apply_btn.parent() is not window.command_bar
 
     window._present_execution_result(
@@ -215,6 +232,87 @@ def test_preflight_ready_opens_python_and_apply_tracks_edits(qapp):
     window.code_editor.insertPlainText("\n# edited")
     qapp.processEvents()
     assert window.code_apply_btn.isVisible()
+    window.close()
+
+
+def test_preflight_cleanup_starts_full_execution(qapp, monkeypatch):
+    window = MainWindow()
+    window._start_new_task()
+    file_meta = FileMeta(
+        file_path="C:/ready.xlsx",
+        file_name="ready.xlsx",
+        file_size_kb=1,
+        sheet_count=0,
+        sheets=[],
+        dataset_id="ds_ready",
+    )
+    window._pending_files_meta = [file_meta]
+    window._pending_query = "Analyze the data"
+    window._generated_code = "print('ready')"
+    window._analysis_plan = {"requirements": []}
+    window._auto_execute_pending = True
+    runtime = window._analysis_tasks.activate(
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+    calls = []
+    monkeypatch.setattr(
+        window,
+        "_start_analysis_worker",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    window._cleanup_worker(runtime.generation)
+
+    assert not window._auto_execute_pending
+    assert calls == [
+        {
+            "mode": "execute",
+            "files_meta": [file_meta],
+            "user_query": "Analyze the data",
+            "code": "print('ready')",
+            "analysis_plan": {"requirements": []},
+        }
+    ]
+    window.close()
+
+
+def test_failed_preparation_never_enables_apply(qapp):
+    window = MainWindow()
+    window.show()
+    window._start_new_task()
+    window._pending_files_meta = [
+        FileMeta(
+            file_path="C:/invalid.xlsx",
+            file_name="invalid.xlsx",
+            file_size_kb=1,
+            sheet_count=0,
+            sheets=[],
+            dataset_id="ds_invalid",
+        )
+    ]
+    window._pending_query = "Analyze invalid data"
+    window._active_worker_mode = "prepare"
+
+    result = SimpleNamespace(
+        needs_clarification=False,
+        success=False,
+        code="import re\nprint('invalid')",
+        analysis_plan={"requirements": []},
+        execution=None,
+        preflight_only=True,
+        retries_used=1,
+        failure_kind="security",
+        error="Security validation failed",
+    )
+    window._on_worker_finished(result)
+    qapp.processEvents()
+
+    assert not window._code_apply_allowed
+    assert not window.code_apply_btn.isVisible()
+    window.code_editor.insertPlainText("\n# edited")
+    qapp.processEvents()
+    assert not window.code_apply_btn.isVisible()
     window.close()
 
 
@@ -969,28 +1067,6 @@ def test_analysis_selection_is_limited_to_three_datasets(qapp):
     window.close()
 
 
-def test_large_selected_dataset_uses_background_analysis_mode(qapp):
-    window = MainWindow()
-    large = FileMeta(
-        file_path="C:/large.xlsx",
-        file_name="large.xlsx",
-        file_size_kb=101 * 1024,
-        sheet_count=0,
-        sheets=[],
-    )
-    small = FileMeta(
-        file_path="C:/small.xlsx",
-        file_name="small.xlsx",
-        file_size_kb=10 * 1024,
-        sheet_count=0,
-        sheets=[],
-    )
-
-    assert window._uses_background_analysis([large])
-    assert not window._uses_background_analysis([small])
-    window.close()
-
-
 def test_activity_strip_tracks_background_work(qapp):
     window = MainWindow()
     window.show()
@@ -1035,6 +1111,7 @@ def test_apply_uses_preflight_result_once(qapp, monkeypatch):
         elapsed_sec=0.1,
         analysis_result=AnalysisResult(summary="Ready"),
     )
+    window._code_apply_allowed = True
     monkeypatch.setattr(
         window,
         "_start_analysis_worker",

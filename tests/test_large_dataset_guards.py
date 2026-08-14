@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
+import zipfile
 
 import pandas as pd
 import pytest
@@ -8,6 +10,111 @@ import pytest
 from config.settings import settings
 from core.data_access import LocalDataCatalog
 from core.preprocessor import Preprocessor, ProcessingCancelled
+
+
+def _replace_sheet_dimension(path: Path, dimension: str) -> None:
+    rewritten = path.with_suffix(".rewritten.xlsx")
+    with zipfile.ZipFile(path) as source, zipfile.ZipFile(rewritten, "w") as target:
+        for info in source.infolist():
+            payload = source.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                payload, replacements = re.subn(
+                    rb"<dimension\b[^>]*/>",
+                    f'<dimension ref="{dimension}"/>'.encode("ascii"),
+                    payload,
+                    count=1,
+                )
+                assert replacements == 1
+            target.writestr(info, payload)
+    rewritten.replace(path)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_headerless_continuation_inherits_schema_without_losing_first_row(
+    tmp_path,
+    monkeypatch,
+    streaming,
+):
+    workbook = tmp_path / "continued.xlsx"
+    first = pd.DataFrame(
+        {
+            "entry_id": [1, 2, 3],
+            "amount": [10.0, 20.0, 30.0],
+            "account": ["1001", "1002", "1003"],
+        }
+    )
+    second = pd.DataFrame(
+        {
+            "entry_id": [4, 5, 6],
+            "amount": [40.0, 50.0, 60.0],
+            "account": ["1004", "1005", "1006"],
+        }
+    )
+    with pd.ExcelWriter(workbook) as writer:
+        first.to_excel(writer, sheet_name="Part1", index=False)
+        second.to_excel(
+            writer,
+            sheet_name="Part2",
+            index=False,
+            header=False,
+        )
+
+    cache_dir = tmp_path / "cache"
+    duckdb_temp = tmp_path / "duckdb-temp"
+    monkeypatch.setattr(settings, "DATASET_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(settings, "DUCKDB_TEMP_DIR", duckdb_temp)
+    monkeypatch.setattr(settings, "LARGE_EXCEL_MB", 0 if streaming else 1024)
+
+    file_meta = Preprocessor().process(str(workbook))
+
+    inherited = file_meta.sheets[1]
+    assert inherited.columns == list(first.columns)
+    assert inherited.rows == len(second)
+    assert inherited.header_mode == "inherited"
+    assert inherited.header_source_sheet_id == file_meta.sheets[0].sheet_id
+    assert inherited.first_row_is_data is True
+    assert inherited.continuation_detected is True
+    assert pd.read_parquet(inherited.cache_path)["entry_id"].tolist() == [4, 5, 6]
+    assert len(file_meta.sheet_groups) == 1
+    assert file_meta.sheet_groups[0].group_type == "same_schema_append"
+    assert file_meta.sheet_groups[0].total_rows == 6
+
+
+def test_ambiguous_all_text_sheet_is_not_silently_inherited(
+    tmp_path,
+    monkeypatch,
+):
+    workbook = tmp_path / "ambiguous.xlsx"
+    first = pd.DataFrame(
+        {
+            "customer": ["A", "B", "C"],
+            "region": ["North", "South", "East"],
+        }
+    )
+    second = pd.DataFrame(
+        {
+            "customer": ["D", "E", "F"],
+            "region": ["West", "North", "South"],
+        }
+    )
+    with pd.ExcelWriter(workbook) as writer:
+        first.to_excel(writer, sheet_name="Part1", index=False)
+        second.to_excel(
+            writer,
+            sheet_name="Part2",
+            index=False,
+            header=False,
+        )
+
+    monkeypatch.setattr(settings, "DATASET_CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(settings, "DUCKDB_TEMP_DIR", tmp_path / "duckdb-temp")
+    monkeypatch.setattr(settings, "LARGE_EXCEL_MB", 1024)
+
+    file_meta = Preprocessor().process(str(workbook))
+
+    assert file_meta.sheets[1].header_mode == "own"
+    assert file_meta.sheets[1].continuation_detected is False
+    assert file_meta.sheet_groups == []
 
 
 def test_streaming_import_uses_parquet_cache_and_writes_manifest(tmp_path, monkeypatch):
@@ -58,6 +165,7 @@ def test_streaming_import_honors_cancellation(tmp_path, monkeypatch):
 
     with pytest.raises(ProcessingCancelled):
         Preprocessor().process(str(workbook), cancel_callback=cancel_callback)
+    assert not list(cache_dir.rglob("*.partial*"))
 
 
 def test_streaming_import_restarts_polluted_numeric_column_as_text(
@@ -84,6 +192,120 @@ def test_streaming_import_restarts_polluted_numeric_column_as_text(
     cached = pd.read_parquet(file_meta.sheets[0].cache_path)
 
     assert cached["price"].tolist() == ["10", "20", "30", "40", "价格待定", "60"]
+
+
+def test_streaming_import_ignores_incorrect_declared_dimension(
+    tmp_path,
+    monkeypatch,
+):
+    workbook = tmp_path / "incorrect-dimension.xlsx"
+    expected = pd.DataFrame(
+        {
+            "id": range(250),
+            "amount": [value * 1.25 for value in range(250)],
+            "region": ["APAC"] * 250,
+        }
+    )
+    expected.to_excel(workbook, index=False)
+    _replace_sheet_dimension(workbook, "A1")
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setattr(settings, "DATASET_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(settings, "DUCKDB_TEMP_DIR", tmp_path / "duckdb")
+
+    plan = Preprocessor._inspect_xlsx_package(workbook)
+    file_meta = Preprocessor().process(str(workbook))
+    cached = pd.read_parquet(file_meta.sheets[0].cache_path)
+
+    assert plan.mode == "stream"
+    assert plan.worksheets[0].declared_dimension == "A1"
+    assert file_meta.sheets[0].rows == len(expected)
+    assert file_meta.sheets[0].columns == list(expected.columns)
+    assert cached["amount"].sum() == pytest.approx(expected["amount"].sum())
+
+
+def test_safe_import_reads_excel_once_then_types_local_parquet(
+    tmp_path,
+    monkeypatch,
+):
+    workbook = tmp_path / "safe-mode.xlsx"
+    pd.DataFrame(
+        {
+            "id": [1, 2, 3],
+            "amount": [10.5, 20.25, 30.75],
+            "label": ["A", "B", "C"],
+            "active": [True, False, True],
+            "posted_on": pd.to_datetime(
+                ["2026-01-01", "2026-01-02", "2026-01-03"]
+            ),
+        }
+    ).to_excel(workbook, index=False)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setattr(settings, "DATASET_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(settings, "DUCKDB_TEMP_DIR", tmp_path / "duckdb")
+    monkeypatch.setattr(settings, "IMPORT_SAFE_SOURCE_BYTES", 0)
+
+    plan = Preprocessor._inspect_xlsx_package(workbook)
+    file_meta = Preprocessor().process(str(workbook))
+    sheet = file_meta.sheets[0]
+    cached = pd.read_parquet(sheet.cache_path)
+
+    assert plan.mode == "safe"
+    assert sheet.dtypes == {
+        "id": "int64",
+        "amount": "double",
+        "label": "string",
+        "active": "bool",
+        "posted_on": "timestamp[us]",
+    }
+    assert cached["id"].tolist() == [1, 2, 3]
+    assert cached["amount"].tolist() == [10.5, 20.25, 30.75]
+    assert cached["label"].tolist() == ["A", "B", "C"]
+    assert cached["active"].tolist() == [True, False, True]
+    assert cached["posted_on"].dt.strftime("%Y-%m-%d").tolist() == [
+        "2026-01-01",
+        "2026-01-02",
+        "2026-01-03",
+    ]
+    assert not list(cache_dir.rglob("*.raw.partial.parquet"))
+
+
+def test_memory_budgeted_batches_shrink_for_long_rows(monkeypatch):
+    monkeypatch.setattr(settings, "IMPORT_BATCH_ROWS", 100)
+    monkeypatch.setattr(settings, "IMPORT_MIN_BATCH_ROWS", 1)
+    monkeypatch.setattr(settings, "IMPORT_BATCH_TARGET_BYTES", 64 * 1024)
+    processor = Preprocessor()
+    rows = iter([(str(index) + "x" * 40_000,) for index in range(5)])
+
+    batches = list(
+        processor._iter_normalized_batches(
+            rows,
+            [],
+            width=1,
+            sheet_name="LongText",
+            cancel_callback=None,
+        )
+    )
+
+    assert [len(batch) for batch in batches] == [1, 1, 1, 1, 1]
+
+
+def test_preflight_rejects_workbook_beyond_uncompressed_budget(
+    tmp_path,
+    monkeypatch,
+):
+    workbook = tmp_path / "budget.xlsx"
+    pd.DataFrame({"id": [1], "value": [2]}).to_excel(workbook, index=False)
+    plan = Preprocessor._inspect_xlsx_package(workbook)
+    monkeypatch.setattr(
+        settings,
+        "IMPORT_MAX_UNCOMPRESSED_BYTES",
+        plan.uncompressed_bytes - 1,
+    )
+
+    with pytest.raises(ValueError, match="expands beyond"):
+        Preprocessor._validate_xlsx_import_plan(plan)
 
 
 def test_large_dataset_requires_projected_columns_for_get(tmp_path, monkeypatch):

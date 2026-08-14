@@ -110,7 +110,18 @@ class MetricDifyClient:
         )
         self._emit(event_callback, "status", "正在校验指标完整性")
         try:
-            result = MetricDiscoveryResult.from_workflow_response(response)
+            result = MetricDiscoveryResult.from_workflow_response(
+                response,
+                regulatory_analysis_required=(
+                    request.regulatory_analysis_enabled
+                ),
+                required_metric_families=(
+                    request.required_metric_families()
+                ),
+                forbidden_metric_families=(
+                    request.forbidden_metric_families()
+                ),
+            )
         except MetricDiscoveryContractError as exc:
             raise MetricClientError(str(exc), status_code=400) from exc
         self._emit(event_callback, "status", "指标生成完成")

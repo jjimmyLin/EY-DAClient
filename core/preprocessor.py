@@ -7,9 +7,10 @@ import json
 import logging
 import math
 import random
+import re
 import shutil
 import zipfile
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
@@ -18,14 +19,27 @@ from typing import Any
 
 import duckdb
 import pandas as pd
+import psutil
 import pyarrow as pa
 import pyarrow.parquet as pq
 from openpyxl import load_workbook
+from openpyxl.utils.cell import get_column_letter, range_boundaries
 
 from config.settings import settings
 
 
 logger = logging.getLogger(__name__)
+
+
+_DIMENSION_PATTERN = re.compile(
+    rb"<(?:[A-Za-z_][\w.-]*:)?dimension\b[^>]*\bref\s*=\s*(['\"])([^'\"]+)\1",
+    re.IGNORECASE,
+)
+_ROW_BEYOND_FIRST_PATTERN = re.compile(rb"<row\b[^>]*\br\s*=\s*['\"](?:[2-9]|[1-9][0-9]+)['\"]")
+_CELL_BEYOND_A1_PATTERN = re.compile(
+    rb"<c\b[^>]*\br\s*=\s*['\"](?:[B-Z]|[A-Z]{2,})[1-9][0-9]*['\"]",
+    re.IGNORECASE,
+)
 
 
 class ProcessingCancelled(Exception):
@@ -39,6 +53,40 @@ class SchemaContamination(Exception):
         self.column = column
         self.value = value
         super().__init__(f"Column {column!r} contains a conflicting value: {value!r}")
+
+
+@dataclass(frozen=True)
+class XlsxWorksheetInfo:
+    """Cheap ZIP-level worksheet facts used for import routing and safeguards."""
+
+    archive_path: str
+    compressed_bytes: int
+    uncompressed_bytes: int
+    declared_dimension: str | None = None
+    declared_max_row: int = 0
+    declared_max_column: int = 0
+    has_data_beyond_a1: bool = False
+
+
+@dataclass(frozen=True)
+class XlsxImportPlan:
+    """Backend-only import route selected without changing the UI contract."""
+
+    mode: str
+    source_bytes: int
+    uncompressed_bytes: int
+    compression_ratio: float
+    shared_strings_bytes: int
+    largest_worksheet_bytes: int
+    worksheets: tuple[XlsxWorksheetInfo, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    def worksheet(self, archive_path: str) -> XlsxWorksheetInfo | None:
+        normalized = str(archive_path).replace("\\", "/").lstrip("/")
+        for item in self.worksheets:
+            if item.archive_path == normalized:
+                return item
+        return None
 
 
 @dataclass
@@ -59,6 +107,12 @@ class SheetMeta:
     unique_rates: dict[str, float] = field(default_factory=dict)
     type_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     semantic_roles: dict[str, list[str]] = field(default_factory=dict)
+    header_mode: str = "own"
+    header_source_sheet_id: str = ""
+    first_row_is_data: bool = False
+    continuation_detected: bool = False
+    continuation_confidence: float = 0.0
+    continuation_reasons: list[str] = field(default_factory=list)
 
     def to_prompt_dict(self) -> dict[str, Any]:
         return {
@@ -75,6 +129,14 @@ class SheetMeta:
             "describe": self.describe,
             "unique_values": self.unique_values,
             "semantic_roles": self.semantic_roles,
+            "header_detection": {
+                "mode": self.header_mode,
+                "source_sheet_id": self.header_source_sheet_id,
+                "first_row_is_data": self.first_row_is_data,
+                "continuation_detected": self.continuation_detected,
+                "confidence": self.continuation_confidence,
+                "reasons": self.continuation_reasons,
+            },
         }
 
 
@@ -160,6 +222,10 @@ class Preprocessor:
         self._batch_rows = settings.IMPORT_BATCH_ROWS
         self._schema_sample_rows = settings.IMPORT_SCHEMA_SAMPLE_ROWS
         self._row_group_size = settings.IMPORT_ROW_GROUP_SIZE
+        self._batch_target_bytes = settings.IMPORT_BATCH_TARGET_BYTES
+        self._batch_memory_fraction = settings.IMPORT_BATCH_MEMORY_FRACTION
+        self._min_batch_rows = settings.IMPORT_MIN_BATCH_ROWS
+        self._cancel_check_rows = settings.IMPORT_CANCEL_CHECK_ROWS
 
     def process(
         self,
@@ -178,9 +244,14 @@ class Preprocessor:
             raise ValueError("File exceeds the 1 GiB per-dataset limit.")
 
         self._raise_if_cancelled(cancel_callback)
+        import_plan: XlsxImportPlan | None = None
+        if path.suffix.lower() in {".xlsx", ".xlsm"}:
+            import_plan = self._inspect_xlsx_package(path)
+            self._validate_xlsx_import_plan(import_plan)
+
         settings.DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         settings.DUCKDB_TEMP_DIR.mkdir(parents=True, exist_ok=True)
-        self._ensure_free_disk_space(path)
+        self._ensure_free_disk_space(path, import_plan=import_plan)
 
         self._emit_progress(progress_callback, "fingerprinting", 2, path.name)
         fingerprint = self._fingerprint(path)
@@ -208,6 +279,7 @@ class Preprocessor:
             path,
             size_kb,
             cancel_callback=cancel_callback,
+            import_plan=import_plan,
         ):
             self._emit_progress(progress_callback, "importing", 10, path.name)
             sheets = self._process_large_xlsx(
@@ -215,6 +287,7 @@ class Preprocessor:
                 dataset_id,
                 progress_callback=progress_callback,
                 cancel_callback=cancel_callback,
+                import_plan=import_plan,
             )
             profile_mode = "sampled"
         else:
@@ -254,6 +327,172 @@ class Preprocessor:
             len(sheets),
         )
         return file_meta
+
+    @classmethod
+    def _inspect_xlsx_package(cls, path: Path) -> XlsxImportPlan:
+        """Inspect ZIP metadata and a bounded XML prefix without inflating sheets."""
+        try:
+            with zipfile.ZipFile(path) as archive:
+                entries = archive.infolist()
+                uncompressed_bytes = sum(int(info.file_size) for info in entries)
+                shared_strings_bytes = 0
+                worksheet_infos: list[XlsxWorksheetInfo] = []
+                probe_bytes = max(4096, int(settings.IMPORT_DIMENSION_PROBE_BYTES))
+
+                for info in entries:
+                    normalized = str(info.filename).replace("\\", "/").lstrip("/")
+                    lowered = normalized.lower()
+                    if lowered == "xl/sharedstrings.xml":
+                        shared_strings_bytes = int(info.file_size)
+                    if not (
+                        lowered.startswith("xl/worksheets/")
+                        and lowered.endswith(".xml")
+                    ):
+                        continue
+
+                    with archive.open(info) as source:
+                        prefix = source.read(probe_bytes)
+                    dimension = None
+                    declared_max_row = 0
+                    declared_max_column = 0
+                    match = _DIMENSION_PATTERN.search(prefix)
+                    if match is not None:
+                        dimension = match.group(2).decode("ascii", errors="ignore") or None
+                    if dimension:
+                        try:
+                            _, _, declared_max_column, declared_max_row = range_boundaries(
+                                dimension.replace("$", "")
+                            )
+                        except (TypeError, ValueError):
+                            logger.warning(
+                                "Invalid worksheet dimension path=%s dimension=%r",
+                                normalized,
+                                dimension,
+                            )
+                            declared_max_row = 0
+                            declared_max_column = 0
+
+                    has_data_beyond_a1 = bool(
+                        _ROW_BEYOND_FIRST_PATTERN.search(prefix)
+                        or _CELL_BEYOND_A1_PATTERN.search(prefix)
+                    )
+                    worksheet_infos.append(
+                        XlsxWorksheetInfo(
+                            archive_path=normalized,
+                            compressed_bytes=int(info.compress_size),
+                            uncompressed_bytes=int(info.file_size),
+                            declared_dimension=dimension,
+                            declared_max_row=declared_max_row,
+                            declared_max_column=declared_max_column,
+                            has_data_beyond_a1=has_data_beyond_a1,
+                        )
+                    )
+        except zipfile.BadZipFile as exc:
+            raise ValueError("Workbook is not a valid XLSX ZIP package.") from exc
+
+        source_bytes = int(path.stat().st_size)
+        compression_ratio = uncompressed_bytes / max(1, source_bytes)
+        largest_worksheet_bytes = max(
+            (item.uncompressed_bytes for item in worksheet_infos),
+            default=0,
+        )
+        suspicious_dimensions = [
+            item
+            for item in worksheet_infos
+            if (
+                item.declared_dimension in {"A1", "A1:A1", None}
+                and (
+                    item.has_data_beyond_a1
+                    or item.uncompressed_bytes
+                    >= settings.IMPORT_SUSPICIOUS_DIMENSION_XML_BYTES
+                )
+            )
+        ]
+        declared_large = any(
+            item.declared_max_row >= settings.LARGE_DATASET_ROWS
+            for item in worksheet_infos
+        )
+        safe_mode = any(
+            (
+                source_bytes >= settings.IMPORT_SAFE_SOURCE_BYTES,
+                uncompressed_bytes >= settings.IMPORT_SAFE_UNCOMPRESSED_BYTES,
+                largest_worksheet_bytes >= settings.IMPORT_SAFE_WORKSHEET_XML_BYTES,
+                shared_strings_bytes >= settings.IMPORT_SAFE_SHARED_STRINGS_BYTES,
+            )
+        )
+        source_large = source_bytes >= max(0, settings.LARGE_EXCEL_MB) * 1024 * 1024
+        fast_uncompressed = (
+            uncompressed_bytes <= settings.IMPORT_FAST_UNCOMPRESSED_BYTES
+        )
+        if safe_mode:
+            mode = "safe"
+        elif source_large or declared_large or suspicious_dimensions or not fast_uncompressed:
+            mode = "stream"
+        else:
+            mode = "small"
+
+        warnings: list[str] = []
+        for item in suspicious_dimensions:
+            warnings.append(
+                f"{item.archive_path}: declared dimension "
+                f"{item.declared_dimension or '<missing>'} is not trusted"
+            )
+        return XlsxImportPlan(
+            mode=mode,
+            source_bytes=source_bytes,
+            uncompressed_bytes=uncompressed_bytes,
+            compression_ratio=round(compression_ratio, 4),
+            shared_strings_bytes=shared_strings_bytes,
+            largest_worksheet_bytes=largest_worksheet_bytes,
+            worksheets=tuple(worksheet_infos),
+            warnings=tuple(warnings),
+        )
+
+    @staticmethod
+    def _validate_xlsx_import_plan(plan: XlsxImportPlan) -> None:
+        if plan.uncompressed_bytes > settings.IMPORT_MAX_UNCOMPRESSED_BYTES:
+            raise ValueError(
+                "Workbook expands beyond the configured safe import limit "
+                f"({plan.uncompressed_bytes / (1024**3):.1f} GiB)."
+            )
+        if (
+            plan.uncompressed_bytes >= settings.IMPORT_ZIP_BOMB_MIN_UNCOMPRESSED_BYTES
+            and plan.compression_ratio > settings.IMPORT_MAX_COMPRESSION_RATIO
+        ):
+            raise ValueError(
+                "Workbook compression ratio is too high for safe import "
+                f"({plan.compression_ratio:.1f}x)."
+            )
+        if plan.shared_strings_bytes > settings.IMPORT_MAX_SHARED_STRINGS_BYTES:
+            raise ValueError(
+                "Workbook shared strings exceed the configured safe import limit."
+            )
+
+        available_memory = max(1, int(psutil.virtual_memory().available))
+        estimated_shared_memory = int(
+            plan.shared_strings_bytes
+            * settings.IMPORT_SHARED_STRINGS_MEMORY_MULTIPLIER
+        )
+        shared_memory_budget = int(
+            available_memory
+            * settings.IMPORT_SHARED_STRINGS_MAX_MEMORY_FRACTION
+        )
+        if estimated_shared_memory > shared_memory_budget:
+            raise ValueError(
+                "Workbook shared strings are too large for the currently available memory."
+            )
+
+        logger.info(
+            "XLSX preflight mode=%s source=%.2fMB uncompressed=%.2fMB "
+            "ratio=%.2fx shared_strings=%.2fMB worksheets=%s warnings=%s",
+            plan.mode,
+            plan.source_bytes / (1024 * 1024),
+            plan.uncompressed_bytes / (1024 * 1024),
+            plan.compression_ratio,
+            plan.shared_strings_bytes / (1024 * 1024),
+            len(plan.worksheets),
+            list(plan.warnings),
+        )
 
     @classmethod
     def _detect_sheet_groups(
@@ -330,17 +569,96 @@ class Preprocessor:
             return "text"
         return normalized or "unknown"
 
+    def _detect_headerless_continuation(
+        self,
+        previous_sheet: SheetMeta | None,
+        first_row: Any,
+        following_rows: list[Any],
+    ) -> tuple[bool, list[str]]:
+        """Conservatively identify a headerless continuation worksheet.
+
+        Every rule below is mandatory.  Workbook size, worksheet names, row-key
+        continuity, and other circumstantial signals intentionally have no role
+        in the decision.
+        """
+        if previous_sheet is None or not previous_sheet.columns:
+            return False, []
+
+        expected_headers = list(previous_sheet.columns)
+        expected_width = len(expected_headers)
+        raw_rows = [first_row, *following_rows]
+        populated_rows = [
+            row
+            for row in raw_rows
+            if row is not None
+            and any(value not in (None, "") for value in row)
+        ]
+        if len(populated_rows) < 3:
+            return False, []
+
+        for row in populated_rows:
+            values = list(row)
+            if len(values) < expected_width:
+                return False, []
+            overflow = values[expected_width:]
+            if any(value not in (None, "") for value in overflow):
+                return False, []
+
+        normalized_first_header = self._normalize_headers(
+            tuple(list(first_row)[:expected_width])
+        )
+        if normalized_first_header == expected_headers:
+            return False, []
+
+        normalized_rows = [
+            self._normalize_row(
+                row,
+                expected_width,
+                sheet_name=previous_sheet.sheet_name,
+            )
+            for row in populated_rows
+        ]
+        candidate_schema = self._infer_arrow_schema(
+            expected_headers,
+            normalized_rows,
+        )
+        previous_families = [
+            self._dtype_family(previous_sheet.dtypes.get(column, ""))
+            for column in expected_headers
+        ]
+        candidate_families = [
+            self._dtype_family(str(field.type))
+            for field in candidate_schema
+        ]
+        if candidate_families != previous_families:
+            return False, []
+
+        decisive_families = {"number", "datetime", "boolean"}
+        compatible_first_row_fields = 0
+        first_values = normalized_rows[0]
+        for index, family in enumerate(previous_families):
+            if family not in decisive_families:
+                continue
+            value = first_values[index]
+            if value in (None, ""):
+                continue
+            first_value_type = self._infer_arrow_type([value])
+            if self._dtype_family(str(first_value_type)) != family:
+                return False, []
+            compatible_first_row_fields += 1
+        if compatible_first_row_fields == 0:
+            return False, []
+
+        return True, [
+            "column count exactly matches the preceding worksheet",
+            "sampled column type families exactly match the preceding worksheet",
+            "the first physical row is data-compatible and is preserved as data",
+        ]
+
     @staticmethod
     def _sheet_group_confidence(sheets: list[SheetMeta]) -> float:
-        confidence = 0.92
-        if len(sheets) >= 3:
-            confidence += 0.02
-        if any(sheet.rows >= 1_000_000 for sheet in sheets):
-            confidence += 0.04
-        names = [sheet.sheet_name for sheet in sheets]
-        if names == sorted(names):
-            confidence += 0.01
-        return round(min(confidence, 0.99), 2)
+        del sheets
+        return 0.92
 
     def _process_small_workbook(
         self,
@@ -361,7 +679,14 @@ class Preprocessor:
                     10 + int(index / max(1, len(sheet_names)) * 80),
                     sheet_name,
                 )
-                sheets.append(self._process_sheet(workbook, sheet_name, dataset_id))
+                sheets.append(
+                    self._process_sheet(
+                        workbook,
+                        sheet_name,
+                        dataset_id,
+                        previous_sheet=(sheets[-1] if sheets else None),
+                    )
+                )
             return sheets
 
     def _process_sheet(
@@ -369,8 +694,49 @@ class Preprocessor:
         workbook: pd.ExcelFile,
         sheet_name: str,
         dataset_id: str,
+        *,
+        previous_sheet: SheetMeta | None = None,
     ) -> SheetMeta:
-        dataframe = workbook.parse(sheet_name)
+        inherited_header = False
+        continuation_reasons: list[str] = []
+        if previous_sheet is not None:
+            preview = workbook.parse(
+                sheet_name,
+                header=None,
+                nrows=max(4, self._schema_sample_rows + 1),
+            )
+            preview_rows = list(preview.itertuples(index=False, name=None))
+            if preview_rows:
+                inherited_header, continuation_reasons = (
+                    self._detect_headerless_continuation(
+                        previous_sheet,
+                        preview_rows[0],
+                        preview_rows[1:],
+                    )
+                )
+
+        if inherited_header and previous_sheet is not None:
+            dataframe = workbook.parse(
+                sheet_name,
+                header=None,
+                names=list(previous_sheet.columns),
+            )
+            header_mode = "inherited"
+            header_source_sheet_id = (
+                previous_sheet.header_source_sheet_id
+                or previous_sheet.sheet_id
+                or previous_sheet.sheet_name
+            )
+            logger.info(
+                "Inherited worksheet headers sheet=%s source=%s reasons=%s",
+                sheet_name,
+                previous_sheet.sheet_name,
+                continuation_reasons,
+            )
+        else:
+            dataframe = workbook.parse(sheet_name)
+            header_mode = "own"
+            header_source_sheet_id = ""
         dataframe, type_profiles = self._normalize_dataframe_for_parquet(
             dataframe,
             sheet_name=sheet_name,
@@ -435,6 +801,12 @@ class Preprocessor:
                 {str(column): str(dtype) for column, dtype in dataframe.dtypes.items()},
                 type_profiles,
             ),
+            header_mode=header_mode,
+            header_source_sheet_id=header_source_sheet_id,
+            first_row_is_data=inherited_header,
+            continuation_detected=inherited_header,
+            continuation_confidence=(1.0 if inherited_header else 0.0),
+            continuation_reasons=continuation_reasons,
         )
 
     def _process_large_xlsx(
@@ -444,6 +816,7 @@ class Preprocessor:
         *,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         cancel_callback: Callable[[], bool] | None = None,
+        import_plan: XlsxImportPlan | None = None,
     ) -> list[SheetMeta]:
         workbook = load_workbook(path, read_only=True, data_only=True)
         try:
@@ -457,10 +830,38 @@ class Preprocessor:
                     10 + int(index / max(1, len(worksheets)) * 65),
                     str(worksheet.title),
                 )
-                sheet_meta = self._stream_sheet_to_cache(
-                    worksheet,
-                    dataset_id,
-                    cancel_callback=cancel_callback,
+                worksheet_path = str(
+                    getattr(worksheet, "_worksheet_path", "")
+                ).replace("\\", "/").lstrip("/")
+                worksheet_info = (
+                    import_plan.worksheet(worksheet_path)
+                    if import_plan is not None
+                    else None
+                )
+                try:
+                    declared_dimension = worksheet.calculate_dimension()
+                except ValueError:
+                    declared_dimension = None
+
+                # A worksheet dimension is optional metadata.  In read-only mode
+                # openpyxl treats it as a hard boundary, so remove that boundary
+                # and let the streaming parser consume the real sheetData rows.
+                worksheet.reset_dimensions()
+                try:
+                    sheet_meta = self._stream_sheet_to_cache(
+                        worksheet,
+                        dataset_id,
+                        cancel_callback=cancel_callback,
+                        safe_mode=bool(import_plan and import_plan.mode == "safe"),
+                        previous_sheet=(sheets[-1] if sheets else None),
+                    )
+                except Exception:
+                    self._cleanup_dataset_partial_files(dataset_id)
+                    raise
+                self._validate_streamed_sheet(
+                    sheet_meta,
+                    declared_dimension=declared_dimension,
+                    worksheet_info=worksheet_info,
                 )
                 sheets.append(sheet_meta)
                 self._emit_progress(
@@ -480,6 +881,8 @@ class Preprocessor:
         *,
         cancel_callback: Callable[[], bool] | None,
         forced_text_columns: set[str] | None = None,
+        safe_mode: bool = False,
+        previous_sheet: SheetMeta | None = None,
     ) -> SheetMeta:
         forced_text_columns = set(forced_text_columns or ())
         sheet_name = str(worksheet.title)
@@ -492,9 +895,15 @@ class Preprocessor:
         sample_cache_path = cache_dir / f"{sheet_id}.sample.parquet"
         temp_cache_path = cache_dir / f"{sheet_id}.partial.parquet"
         temp_sample_path = cache_dir / f"{sheet_id}.sample.partial.parquet"
+        raw_temp_path = cache_dir / f"{sheet_id}.raw.partial.parquet"
 
-        self._cleanup_partial_files(temp_cache_path, temp_sample_path)
-        logger.info("Streaming sheet %s into parquet cache %s", sheet_name, cache_path)
+        self._cleanup_partial_files(temp_cache_path, temp_sample_path, raw_temp_path)
+        logger.info(
+            "Streaming sheet %s into parquet cache %s mode=%s",
+            sheet_name,
+            cache_path,
+            "safe" if safe_mode else "typed",
+        )
 
         row_iterator = worksheet.iter_rows(values_only=True)
         first_row = next(row_iterator, None)
@@ -517,13 +926,75 @@ class Preprocessor:
                 unique_values={},
             )
 
-        headers = self._normalize_headers(first_row)
-        seed_rows: list[list[Any]] = []
+        raw_seed_rows: list[Any] = []
         for _ in range(self._schema_sample_rows):
             raw = next(row_iterator, None)
             if raw is None:
                 break
-            seed_rows.append(self._normalize_row(raw, len(headers)))
+            raw_seed_rows.append(raw)
+
+        inherited_header, continuation_reasons = (
+            self._detect_headerless_continuation(
+                previous_sheet,
+                first_row,
+                raw_seed_rows,
+            )
+        )
+        if inherited_header and previous_sheet is not None:
+            headers = list(previous_sheet.columns)
+            width = len(headers)
+            seed_rows = [
+                self._normalize_row(raw, width, sheet_name=sheet_name)
+                for raw in [first_row, *raw_seed_rows]
+            ]
+            header_mode = "inherited"
+            header_source_sheet_id = (
+                previous_sheet.header_source_sheet_id
+                or previous_sheet.sheet_id
+                or previous_sheet.sheet_name
+            )
+            first_row_is_data = True
+            logger.info(
+                "Inherited worksheet headers sheet=%s source=%s reasons=%s",
+                sheet_name,
+                previous_sheet.sheet_name,
+                continuation_reasons,
+            )
+        else:
+            width = max(
+                len(first_row),
+                *(len(row) for row in raw_seed_rows),
+            )
+            header_values = list(first_row)
+            if len(header_values) < width:
+                header_values.extend([None] * (width - len(header_values)))
+            headers = self._normalize_headers(tuple(header_values))
+            seed_rows = [
+                self._normalize_row(raw, width, sheet_name=sheet_name)
+                for raw in raw_seed_rows
+            ]
+            header_mode = "own"
+            header_source_sheet_id = ""
+            first_row_is_data = False
+
+        if safe_mode:
+            return self._stream_sheet_to_cache_safe(
+                row_iterator=row_iterator,
+                seed_rows=seed_rows,
+                headers=headers,
+                sheet_name=sheet_name,
+                sheet_id=sheet_id,
+                cache_path=cache_path,
+                sample_cache_path=sample_cache_path,
+                temp_cache_path=temp_cache_path,
+                temp_sample_path=temp_sample_path,
+                raw_temp_path=raw_temp_path,
+                cancel_callback=cancel_callback,
+                header_mode=header_mode,
+                header_source_sheet_id=header_source_sheet_id,
+                first_row_is_data=first_row_is_data,
+                continuation_reasons=continuation_reasons,
+            )
 
         schema = self._infer_arrow_schema(
             headers,
@@ -545,20 +1016,13 @@ class Preprocessor:
 
         contamination: SchemaContamination | None = None
         try:
-            batch: list[list[Any]] = []
-            pending = list(seed_rows)
-            while True:
-                self._raise_if_cancelled(cancel_callback)
-                while pending and len(batch) < self._batch_rows:
-                    batch.append(pending.pop(0))
-                while len(batch) < self._batch_rows:
-                    raw = next(row_iterator, None)
-                    if raw is None:
-                        break
-                    batch.append(self._normalize_row(raw, len(headers)))
-                if not batch:
-                    break
-
+            for batch in self._iter_normalized_batches(
+                row_iterator,
+                seed_rows,
+                width=len(headers),
+                sheet_name=sheet_name,
+                cancel_callback=cancel_callback,
+            ):
                 table, records = self._batch_to_arrow_table(headers, schema, batch)
                 writer.write_table(table, row_group_size=self._row_group_size)
                 rows_seen = self._update_stream_profile(
@@ -570,12 +1034,11 @@ class Preprocessor:
                     reservoir_rng,
                     text_uniques,
                 )
-                batch = []
         except SchemaContamination as exc:
             contamination = exc
             logger.warning(
                 "Type contamination detected dataset_id=%s sheet=%s column=%s value=%r; "
-                "restarting that column as text",
+                "falling back once to raw safe import",
                 dataset_id,
                 sheet_name,
                 exc.column,
@@ -588,20 +1051,158 @@ class Preprocessor:
             writer.close()
 
         if contamination is not None:
-            self._cleanup_partial_files(temp_cache_path, temp_sample_path)
-            forced_text_columns.add(contamination.column)
+            self._cleanup_partial_files(temp_cache_path, temp_sample_path, raw_temp_path)
+            worksheet.reset_dimensions()
             return self._stream_sheet_to_cache(
                 worksheet,
                 dataset_id,
                 cancel_callback=cancel_callback,
-                forced_text_columns=forced_text_columns,
+                safe_mode=True,
+                previous_sheet=previous_sheet,
             )
 
         sample_df = pd.DataFrame(reservoir, columns=headers) if reservoir else pd.DataFrame(columns=headers)
+        return self._complete_streamed_sheet(
+            sheet_name=sheet_name,
+            sheet_id=sheet_id,
+            cache_path=cache_path,
+            sample_cache_path=sample_cache_path,
+            temp_cache_path=temp_cache_path,
+            temp_sample_path=temp_sample_path,
+            schema=schema,
+            sample_df=sample_df,
+            rows=rows_seen,
+            headers=headers,
+            null_counts=null_counts,
+            head_rows=head_rows,
+            header_mode=header_mode,
+            header_source_sheet_id=header_source_sheet_id,
+            first_row_is_data=first_row_is_data,
+            continuation_reasons=continuation_reasons,
+        )
+
+    def _stream_sheet_to_cache_safe(
+        self,
+        *,
+        row_iterator: Any,
+        seed_rows: list[list[Any]],
+        headers: list[str],
+        sheet_name: str,
+        sheet_id: str,
+        cache_path: Path,
+        sample_cache_path: Path,
+        temp_cache_path: Path,
+        temp_sample_path: Path,
+        raw_temp_path: Path,
+        cancel_callback: Callable[[], bool] | None,
+        header_mode: str,
+        header_source_sheet_id: str,
+        first_row_is_data: bool,
+        continuation_reasons: list[str],
+    ) -> SheetMeta:
+        """Read Excel once into a raw cache, then type it from local Parquet."""
+        raw_schema = pa.schema([pa.field(header, pa.string()) for header in headers])
+        writer = pq.ParquetWriter(
+            raw_temp_path,
+            schema=raw_schema,
+            compression="zstd",
+            use_dictionary=True,
+        )
+        observed_kinds: list[set[str]] = [set() for _ in headers]
+        rows_seen = 0
+        null_counts = Counter()
+        head_rows: list[dict[str, Any]] = []
+        reservoir: list[dict[str, Any]] = []
+        reservoir_rng = random.Random(42)
+        text_uniques: dict[str, set[str]] = {header: set() for header in headers}
+        try:
+            for batch in self._iter_normalized_batches(
+                row_iterator,
+                seed_rows,
+                width=len(headers),
+                sheet_name=sheet_name,
+                cancel_callback=cancel_callback,
+            ):
+                table, records = self._batch_to_raw_arrow_table(
+                    headers,
+                    batch,
+                    observed_kinds,
+                )
+                writer.write_table(table, row_group_size=self._row_group_size)
+                rows_seen = self._update_stream_profile(
+                    records,
+                    rows_seen,
+                    null_counts,
+                    head_rows,
+                    reservoir,
+                    reservoir_rng,
+                    text_uniques,
+                )
+        except Exception:
+            logger.exception("Safe streaming import failed for sheet=%s", sheet_name)
+            raise
+        finally:
+            writer.close()
+
+        schema = self._schema_from_observed_kinds(headers, observed_kinds)
+        try:
+            self._materialize_typed_parquet(
+                raw_temp_path,
+                temp_cache_path,
+                schema,
+            )
+        finally:
+            raw_temp_path.unlink(missing_ok=True)
+
+        sample_df = (
+            pd.DataFrame(reservoir, columns=headers)
+            if reservoir
+            else pd.DataFrame(columns=headers)
+        )
+        sample_df = self._coerce_sample_to_schema(sample_df, schema)
+        return self._complete_streamed_sheet(
+            sheet_name=sheet_name,
+            sheet_id=sheet_id,
+            cache_path=cache_path,
+            sample_cache_path=sample_cache_path,
+            temp_cache_path=temp_cache_path,
+            temp_sample_path=temp_sample_path,
+            schema=schema,
+            sample_df=sample_df,
+            rows=rows_seen,
+            headers=headers,
+            null_counts=null_counts,
+            head_rows=head_rows,
+            header_mode=header_mode,
+            header_source_sheet_id=header_source_sheet_id,
+            first_row_is_data=first_row_is_data,
+            continuation_reasons=continuation_reasons,
+        )
+
+    def _complete_streamed_sheet(
+        self,
+        *,
+        sheet_name: str,
+        sheet_id: str,
+        cache_path: Path,
+        sample_cache_path: Path,
+        temp_cache_path: Path,
+        temp_sample_path: Path,
+        schema: pa.Schema,
+        sample_df: pd.DataFrame,
+        rows: int,
+        headers: list[str],
+        null_counts: Counter,
+        head_rows: list[dict[str, Any]],
+        header_mode: str = "own",
+        header_source_sheet_id: str = "",
+        first_row_is_data: bool = False,
+        continuation_reasons: list[str] | None = None,
+    ) -> SheetMeta:
         self._write_dataframe_parquet_atomically(sample_df, temp_sample_path)
         unique_counts = self._approx_unique_counts(temp_cache_path, headers)
         unique_rates = {
-            column: round(count / max(1, rows_seen), 6)
+            column: round(count / max(1, rows), 6)
             for column, count in unique_counts.items()
         }
         dtypes = {field.name: str(field.type) for field in schema}
@@ -611,11 +1212,10 @@ class Preprocessor:
 
         self._finalize_atomic_cache(temp_cache_path, cache_path)
         self._finalize_atomic_cache(temp_sample_path, sample_cache_path)
-
         logger.info(
             "Completed streaming sheet %s rows=%s cols=%s",
             sheet_name,
-            rows_seen,
+            rows,
             len(headers),
         )
         return SheetMeta(
@@ -623,13 +1223,20 @@ class Preprocessor:
             sheet_id=sheet_id,
             cache_path=str(cache_path),
             sample_cache_path=str(sample_cache_path),
-            rows=rows_seen,
+            rows=rows,
             cols=len(headers),
             columns=headers,
             dtypes=dtypes,
-            null_counts={key: int(value) for key, value in null_counts.items() if value > 0},
+            null_counts={
+                key: int(value)
+                for key, value in null_counts.items()
+                if value > 0
+            },
             head_sample=[
-                {column: "" if value is None else str(value) for column, value in row.items()}
+                {
+                    column: "" if value is None else str(value)
+                    for column, value in row.items()
+                }
                 for row in head_rows
             ],
             describe=describe,
@@ -642,7 +1249,295 @@ class Preprocessor:
                 dtypes,
                 type_profiles,
             ),
+            header_mode=header_mode,
+            header_source_sheet_id=header_source_sheet_id,
+            first_row_is_data=first_row_is_data,
+            continuation_detected=(header_mode == "inherited"),
+            continuation_confidence=(1.0 if header_mode == "inherited" else 0.0),
+            continuation_reasons=list(continuation_reasons or []),
         )
+
+    def _iter_normalized_batches(
+        self,
+        row_iterator: Any,
+        seed_rows: list[list[Any]],
+        *,
+        width: int,
+        sheet_name: str,
+        cancel_callback: Callable[[], bool] | None,
+    ) -> Any:
+        """Yield memory-budgeted row batches without buffering the worksheet."""
+        pending = deque(seed_rows)
+        carry: list[Any] | None = None
+        source_exhausted = False
+        target_bytes = self._effective_batch_target_bytes()
+        max_rows = max(1, int(self._batch_rows))
+        min_rows = max(1, min(int(self._min_batch_rows), max_rows))
+        cancel_interval = max(1, int(self._cancel_check_rows))
+        rows_since_cancel = 0
+
+        while pending or carry is not None or not source_exhausted:
+            batch: list[list[Any]] = []
+            estimated_bytes = 0
+            while len(batch) < max_rows:
+                if carry is not None:
+                    normalized = carry
+                    carry = None
+                elif pending:
+                    normalized = pending.popleft()
+                elif not source_exhausted:
+                    raw = next(row_iterator, None)
+                    if raw is None:
+                        source_exhausted = True
+                        break
+                    normalized = self._normalize_row(
+                        raw,
+                        width,
+                        sheet_name=sheet_name,
+                    )
+                else:
+                    break
+
+                row_bytes = self._estimate_row_memory_bytes(normalized)
+                would_exceed = estimated_bytes + row_bytes > target_bytes
+                large_row = row_bytes > max(1, target_bytes // 4)
+                if batch and would_exceed and (len(batch) >= min_rows or large_row):
+                    carry = normalized
+                    break
+
+                batch.append(normalized)
+                estimated_bytes += row_bytes
+                rows_since_cancel += 1
+                if rows_since_cancel >= cancel_interval:
+                    self._raise_if_cancelled(cancel_callback)
+                    rows_since_cancel = 0
+
+            if not batch:
+                break
+            self._raise_if_cancelled(cancel_callback)
+            yield batch
+
+    def _effective_batch_target_bytes(self) -> int:
+        available_memory = max(1, int(psutil.virtual_memory().available))
+        fraction = max(0.01, min(0.50, float(self._batch_memory_fraction)))
+        memory_budget = max(64 * 1024, int(available_memory * fraction))
+        configured = max(64 * 1024, int(self._batch_target_bytes))
+        return min(configured, memory_budget)
+
+    @staticmethod
+    def _estimate_row_memory_bytes(row: list[Any]) -> int:
+        estimated = 64
+        for value in row:
+            if value is None:
+                estimated += 8
+            elif isinstance(value, str):
+                estimated += 64 + len(value.encode("utf-8", errors="replace"))
+            elif isinstance(value, (datetime, date, time)):
+                estimated += 64
+            else:
+                estimated += 32
+        # Lists, records, column buffers, and Arrow arrays coexist briefly.
+        return max(1, int(estimated * 2.5))
+
+    def _batch_to_raw_arrow_table(
+        self,
+        headers: list[str],
+        rows: list[list[Any]],
+        observed_kinds: list[set[str]],
+    ) -> tuple[pa.Table, list[dict[str, Any]]]:
+        columns: dict[str, list[str | None]] = {header: [] for header in headers}
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            record: dict[str, Any] = {}
+            for index, header in enumerate(headers):
+                value = row[index]
+                kind = self._value_kind(value)
+                if kind is not None:
+                    observed_kinds[index].add(kind)
+                raw_value = self._raw_scalar(value)
+                columns[header].append(raw_value)
+                record[header] = raw_value
+            records.append(record)
+        arrays = [pa.array(columns[header], type=pa.string()) for header in headers]
+        return pa.Table.from_arrays(arrays, names=headers), records
+
+    @staticmethod
+    def _value_kind(value: Any) -> str | None:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if isinstance(value, bool):
+            return "bool"
+        if isinstance(value, int):
+            return "int"
+        if isinstance(value, float):
+            return "float"
+        if isinstance(value, datetime):
+            return "datetime"
+        if isinstance(value, date):
+            return "date"
+        if isinstance(value, time):
+            return "time"
+        return "string"
+
+    @staticmethod
+    def _raw_scalar(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (datetime, date, time)):
+            return value.isoformat()
+        return str(value)
+
+    @staticmethod
+    def _schema_from_observed_kinds(
+        headers: list[str],
+        observed_kinds: list[set[str]],
+    ) -> pa.Schema:
+        fields: list[pa.Field] = []
+        for header, kinds in zip(headers, observed_kinds):
+            if kinds and kinds <= {"bool"}:
+                arrow_type = pa.bool_()
+            elif kinds and kinds <= {"int"}:
+                arrow_type = pa.int64()
+            elif kinds and kinds <= {"int", "float"}:
+                arrow_type = pa.float64()
+            elif kinds and kinds <= {"datetime"}:
+                arrow_type = pa.timestamp("us")
+            elif kinds and kinds <= {"date"}:
+                arrow_type = pa.date32()
+            elif kinds and kinds <= {"date", "datetime"}:
+                arrow_type = pa.timestamp("us")
+            else:
+                arrow_type = pa.string()
+            fields.append(pa.field(header, arrow_type))
+        return pa.schema(fields)
+
+    def _materialize_typed_parquet(
+        self,
+        raw_path: Path,
+        destination: Path,
+        schema: pa.Schema,
+    ) -> None:
+        destination.unlink(missing_ok=True)
+        if all(pa.types.is_string(field.type) for field in schema):
+            raw_path.replace(destination)
+            return
+
+        sql_types: dict[str, str] = {}
+        for field in schema:
+            if pa.types.is_boolean(field.type):
+                sql_types[field.name] = "BOOLEAN"
+            elif pa.types.is_integer(field.type):
+                sql_types[field.name] = "BIGINT"
+            elif pa.types.is_floating(field.type):
+                sql_types[field.name] = "DOUBLE"
+            elif pa.types.is_timestamp(field.type):
+                sql_types[field.name] = "TIMESTAMP"
+            elif pa.types.is_date32(field.type):
+                sql_types[field.name] = "DATE"
+
+        projections = []
+        for field in schema:
+            quoted = self._quote(field.name)
+            sql_type = sql_types.get(field.name)
+            projections.append(
+                f"CAST({quoted} AS {sql_type}) AS {quoted}"
+                if sql_type
+                else quoted
+            )
+        raw_sql = str(raw_path).replace("'", "''")
+        destination_sql = str(destination).replace("'", "''")
+        connection = self._duckdb_connection()
+        try:
+            connection.execute("SET preserve_insertion_order=true")
+            connection.execute(
+                "COPY (SELECT "
+                + ",".join(projections)
+                + f" FROM read_parquet('{raw_sql}')) "
+                + f"TO '{destination_sql}' "
+                + "(FORMAT PARQUET, COMPRESSION ZSTD, "
+                + f"ROW_GROUP_SIZE {max(1, int(self._row_group_size))})"
+            )
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _coerce_sample_to_schema(
+        sample: pd.DataFrame,
+        schema: pa.Schema,
+    ) -> pd.DataFrame:
+        converted = sample.copy()
+        for field in schema:
+            column = field.name
+            if column not in converted:
+                continue
+            if pa.types.is_boolean(field.type):
+                converted[column] = converted[column].map(
+                    lambda value: (
+                        pd.NA
+                        if pd.isna(value)
+                        else str(value).strip().lower() == "true"
+                    )
+                ).astype("boolean")
+            elif pa.types.is_integer(field.type):
+                converted[column] = pd.to_numeric(
+                    converted[column],
+                    errors="raise",
+                ).astype("Int64")
+            elif pa.types.is_floating(field.type):
+                converted[column] = pd.to_numeric(
+                    converted[column],
+                    errors="raise",
+                ).astype("Float64")
+            elif pa.types.is_timestamp(field.type):
+                converted[column] = pd.to_datetime(converted[column], errors="raise")
+            elif pa.types.is_date32(field.type):
+                converted[column] = pd.to_datetime(
+                    converted[column],
+                    errors="raise",
+                ).dt.date
+            else:
+                converted[column] = converted[column].astype("string")
+        return converted
+
+    @staticmethod
+    def _validate_streamed_sheet(
+        sheet: SheetMeta,
+        *,
+        declared_dimension: str | None,
+        worksheet_info: XlsxWorksheetInfo | None,
+    ) -> None:
+        if (
+            worksheet_info is not None
+            and worksheet_info.has_data_beyond_a1
+            and sheet.rows == 0
+            and sheet.cols <= 1
+        ):
+            raise ValueError(
+                f"Worksheet {sheet.sheet_name!r} contains cells beyond A1 but "
+                "the streaming import produced no data rows."
+            )
+
+        if sheet.cols <= 0:
+            actual_dimension = "<empty>"
+        else:
+            physical_rows = sheet.rows + (0 if sheet.first_row_is_data else 1)
+            actual_dimension = (
+                f"A1:{get_column_letter(sheet.cols)}{max(1, physical_rows)}"
+            )
+        normalized_declared = (declared_dimension or "<missing>").replace("$", "")
+        if normalized_declared not in {actual_dimension, "A1" if actual_dimension == "A1:A1" else ""}:
+            logger.warning(
+                "Worksheet dimension mismatch sheet=%s declared=%s actual=%s; "
+                "actual streamed cells were retained",
+                sheet.sheet_name,
+                normalized_declared,
+                actual_dimension,
+            )
 
     @staticmethod
     def _should_stream_xlsx(
@@ -650,7 +1545,10 @@ class Preprocessor:
         size_kb: float,
         *,
         cancel_callback: Callable[[], bool] | None = None,
+        import_plan: XlsxImportPlan | None = None,
     ) -> bool:
+        if import_plan is not None:
+            return import_plan.mode in {"stream", "safe"}
         if size_kb >= settings.LARGE_EXCEL_MB * 1024:
             return True
         workbook = load_workbook(path, read_only=True, data_only=True)
@@ -664,14 +1562,26 @@ class Preprocessor:
         finally:
             workbook.close()
 
-    def _ensure_free_disk_space(self, path: Path) -> None:
+    def _ensure_free_disk_space(
+        self,
+        path: Path,
+        *,
+        import_plan: XlsxImportPlan | None = None,
+    ) -> None:
         try:
             usage = shutil.disk_usage(settings.DATASET_CACHE_DIR)
         except FileNotFoundError:
             settings.DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
             usage = shutil.disk_usage(settings.DATASET_CACHE_DIR)
 
-        estimated_need = self._estimate_required_disk_bytes(path)
+        estimated_need = self._estimate_required_disk_bytes(
+            path,
+            uncompressed_bytes=(
+                import_plan.uncompressed_bytes
+                if import_plan is not None
+                else None
+            ),
+        )
         logger.info(
             "Disk check for %s free=%s required=%s",
             path.name,
@@ -687,10 +1597,14 @@ class Preprocessor:
             )
 
     @staticmethod
-    def _estimate_required_disk_bytes(path: Path) -> int:
+    def _estimate_required_disk_bytes(
+        path: Path,
+        *,
+        uncompressed_bytes: int | None = None,
+    ) -> int:
         source_size = path.stat().st_size
-        zip_uncompressed = 0
-        if path.suffix.lower() in {".xlsx", ".xlsm"}:
+        zip_uncompressed = int(uncompressed_bytes or 0)
+        if zip_uncompressed <= 0 and path.suffix.lower() in {".xlsx", ".xlsm"}:
             try:
                 with zipfile.ZipFile(path) as archive:
                     zip_uncompressed = sum(info.file_size for info in archive.infolist())
@@ -715,8 +1629,21 @@ class Preprocessor:
         return headers
 
     @staticmethod
-    def _normalize_row(values: Any, width: int) -> list[Any]:
-        row = list(values[:width]) if values is not None else []
+    def _normalize_row(
+        values: Any,
+        width: int,
+        *,
+        sheet_name: str = "",
+    ) -> list[Any]:
+        raw = list(values) if values is not None else []
+        overflow = raw[width:]
+        if any(value not in (None, "") for value in overflow):
+            location = f" in worksheet {sheet_name!r}" if sheet_name else ""
+            raise ValueError(
+                "A data row contains populated cells beyond the detected header "
+                f"width{location}; refusing to silently truncate columns."
+            )
+        row = raw[:width]
         if len(row) < width:
             row.extend([None] * (width - len(row)))
         return row
@@ -1258,6 +2185,14 @@ class Preprocessor:
     @staticmethod
     def _cleanup_partial_files(*paths: Path) -> None:
         for path in paths:
+            path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _cleanup_dataset_partial_files(dataset_id: str) -> None:
+        cache_dir = settings.DATASET_CACHE_DIR / dataset_id
+        if not cache_dir.exists():
+            return
+        for path in cache_dir.glob("*.partial*"):
             path.unlink(missing_ok=True)
 
     def _write_dataset_manifest(self, dataset_id: str, file_meta: FileMeta) -> None:

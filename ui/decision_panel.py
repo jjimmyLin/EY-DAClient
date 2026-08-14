@@ -237,7 +237,7 @@ DECISION_PANEL_STYLE = """
     }
 
     QLabel#decisionTitle {
-        font-family: "Arial";
+        font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
         font-size: 18px;
         font-weight: 700;
         color: #111827;
@@ -246,7 +246,7 @@ DECISION_PANEL_STYLE = """
     }
 
     QLabel#decisionDesc {
-        font-family: "Arial";
+        font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
         font-size: 13px;
         font-weight: 400;
         color: #6B7280;
@@ -265,7 +265,7 @@ DECISION_PANEL_STYLE = """
     }
 
     QLabel#optionLabel {
-        font-family: "Arial";
+        font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
         font-size: 14px;
         font-weight: 600;
         color: #111827;
@@ -273,7 +273,7 @@ DECISION_PANEL_STYLE = """
     }
 
     QLabel#optionTag {
-        font-family: "Arial";
+        font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
         font-size: 11px;
         font-weight: 600;
         color: #059669;
@@ -284,7 +284,7 @@ DECISION_PANEL_STYLE = """
     }
 
     QLabel#optionDesc {
-        font-family: "Arial";
+        font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
         font-size: 12px;
         font-weight: 400;
         color: #6B7280;
